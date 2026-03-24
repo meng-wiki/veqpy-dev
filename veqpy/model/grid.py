@@ -45,6 +45,7 @@ class Grid(Serial):
     theta: np.ndarray = field(init=False)
     cos_theta: np.ndarray = field(init=False)
     sin_theta: np.ndarray = field(init=False)
+    cos_2theta: np.ndarray = field(init=False)
     sin_2theta: np.ndarray = field(init=False)
 
     weights: np.ndarray = field(init=False)
@@ -53,9 +54,7 @@ class Grid(Serial):
 
     x: np.ndarray = field(init=False)
     y: np.ndarray = field(init=False)
-    T: np.ndarray = field(init=False)
-    T_r: np.ndarray = field(init=False)
-    T_rr: np.ndarray = field(init=False)
+    T_fields: np.ndarray = field(init=False)
 
     @classmethod
     def serial_attributes(cls) -> dict[str, type]:
@@ -90,13 +89,14 @@ class Grid(Serial):
             raise ValueError("Nr must be at least 4 for stable spectral methods")
         if self.Nt < 1:
             raise ValueError("Nt must be positive")
-        if self.L_max < 0:
-            raise ValueError("L_max must be non-negative")
+        if self.L_max < 1:
+            raise ValueError("L_max must be at least 1")
 
         rho, weights = _build_rho_and_weights(self.Nr, scheme)
         theta = np.linspace(0.0, 2.0 * np.pi, self.Nt, endpoint=False)
         cos_theta = np.cos(theta)
         sin_theta = np.sin(theta)
+        cos_2theta = cos_theta * cos_theta - sin_theta * sin_theta
         sin_2theta = 2.0 * sin_theta * cos_theta
         rho2 = rho * rho
         x = 2.0 * rho2 - 1.0
@@ -109,22 +109,36 @@ class Grid(Serial):
             integration_matrix = _build_integration_matrix(rho)
             differentiation_matrix = _build_differentiation_matrix(rho)
 
-        T, T_r, T_rr = _build_chebyshev_tables(rho, x, self.L_max)
+        T_fields = _build_chebyshev_tables(rho, x, self.L_max)
 
         object.__setattr__(self, "rho", np.asarray(rho, dtype=np.float64))
         object.__setattr__(self, "rho2", np.asarray(rho2, dtype=np.float64))
         object.__setattr__(self, "theta", np.asarray(theta, dtype=np.float64))
         object.__setattr__(self, "cos_theta", np.asarray(cos_theta, dtype=np.float64))
         object.__setattr__(self, "sin_theta", np.asarray(sin_theta, dtype=np.float64))
+        object.__setattr__(self, "cos_2theta", np.asarray(cos_2theta, dtype=np.float64))
         object.__setattr__(self, "sin_2theta", np.asarray(sin_2theta, dtype=np.float64))
         object.__setattr__(self, "weights", np.asarray(weights, dtype=np.float64))
         object.__setattr__(self, "integration_matrix", np.asarray(integration_matrix, dtype=np.float64))
         object.__setattr__(self, "differentiation_matrix", np.asarray(differentiation_matrix, dtype=np.float64))
         object.__setattr__(self, "x", np.asarray(x, dtype=np.float64))
         object.__setattr__(self, "y", np.asarray(y, dtype=np.float64))
-        object.__setattr__(self, "T", np.asarray(T, dtype=np.float64))
-        object.__setattr__(self, "T_r", np.asarray(T_r, dtype=np.float64))
-        object.__setattr__(self, "T_rr", np.asarray(T_rr, dtype=np.float64))
+        object.__setattr__(self, "T_fields", np.asarray(T_fields, dtype=np.float64))
+
+    @property
+    def T(self) -> np.ndarray:
+        rows = self.L_max + 1
+        return self.T_fields[:rows]
+
+    @property
+    def T_r(self) -> np.ndarray:
+        rows = self.L_max + 1
+        return self.T_fields[rows : 2 * rows]
+
+    @property
+    def T_rr(self) -> np.ndarray:
+        rows = self.L_max + 1
+        return self.T_fields[2 * rows : 3 * rows]
 
     def __rich__(self):
         tree = Tree("[bold blue]Grid[/]")
@@ -376,7 +390,7 @@ def _build_chebyshev_tables(
     rho: np.ndarray,
     x: np.ndarray,
     L_max: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> np.ndarray:
     Nr = len(rho)
     T = np.zeros((L_max + 1, Nr), dtype=np.float64)
     Tx = np.zeros((L_max + 1, Nr), dtype=np.float64)
@@ -385,6 +399,7 @@ def _build_chebyshev_tables(
     if L_max >= 1:
         T[1, :] = x
         Tx[1, :] = 1.0
+
     for k in range(1, L_max):
         T[k + 1, :] = 2.0 * x * T[k, :] - T[k - 1, :]
         Tx[k + 1, :] = 2.0 * T[k, :] + 2.0 * x * Tx[k, :] - Tx[k - 1, :]
@@ -394,4 +409,9 @@ def _build_chebyshev_tables(
     d2x_dr2 = 4.0
     T_r = Tx * dx_dr[None, :]
     T_rr = Txx * (dx_dr[None, :] ** 2) + Tx * d2x_dr2
-    return T, T_r, T_rr
+    rows = L_max + 1
+    out = np.empty((3 * rows, Nr), dtype=np.float64)
+    out[:rows] = T
+    out[rows : 2 * rows] = T_r
+    out[2 * rows : 3 * rows] = T_rr
+    return out

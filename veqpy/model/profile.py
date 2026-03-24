@@ -214,9 +214,11 @@ class Profile(Serial):
 
     def _prepare_runtime_cache(self, grid: Grid) -> None:
         """绑定 Grid 并准备 profile 计算所需的只读缓存."""
-        self._T = grid.T
-        self._T_r = grid.T_r
-        self._T_rr = grid.T_rr
+        rows = grid.L_max + 1
+        T_fields = grid.T_fields
+        self._T = T_fields[:rows]
+        self._T_r = T_fields[rows : 2 * rows]
+        self._T_rr = T_fields[2 * rows : 3 * rows]
 
         rp, rp_r, rp_rr = _power_terms(grid.rho, self.power)
         env, env_r, env_rr = _envelope_terms(grid.rho, grid.rho2, grid.y, self.envelope_power)

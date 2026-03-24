@@ -59,6 +59,8 @@ def update_geometry(
     theta: np.ndarray,
     cos_theta: np.ndarray,
     sin_theta: np.ndarray,
+    cos_2theta: np.ndarray,
+    sin_2theta: np.ndarray,
     weights: np.ndarray,
     h: np.ndarray,
     h_r: np.ndarray,
@@ -89,7 +91,8 @@ def update_geometry(
         tb, cos_tb, sin_tb, tb_r, tb_t, ..., gttdivJR_r, grtdivJR_t: 调用方持有的二维输出缓冲区, shape=(nr, nt).
         S_r, V_r, Kn, Kn_r, Ln_r: 调用方持有的一维输出缓冲区, shape=(nr,).
         a, R0, Z0: 几何尺度与平移参数, 单位与 R, Z 保持一致.
-        rho, theta, cos_theta, sin_theta, weights: 径向和极向网格及求积权重, shape=(nr,) 或 (nt,).
+        rho, theta, cos_theta, sin_theta, cos_2theta, sin_2theta, weights:
+            径向和极向网格及求积权重, shape=(nr,) 或 (nt,).
         h, h_r, h_rr, v, v_r, v_rr, ...: 当前 grid 上的几何参数化 profile 及其一阶, 二阶导数, shape=(nr,).
 
     Returns:
@@ -134,8 +137,8 @@ def update_geometry(
         for j in range(nt):
             cos_t = cos_theta[j]
             sin_t = sin_theta[j]
-            cos_2t = cos_t * cos_t - sin_t * sin_t
-            sin_2t = 2.0 * sin_t * cos_t
+            cos_2t = cos_2theta[j]
+            sin_2t = sin_2theta[j]
 
             tb_ij = theta[j] + c0_i + c1_i * cos_t + s1_i * sin_t + s2_i * sin_2t
             tb_r_ij = c0_r_i + c1_r_i * cos_t + s1_r_i * sin_t + s2_r_i * sin_2t

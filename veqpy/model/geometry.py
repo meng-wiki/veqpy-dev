@@ -169,6 +169,7 @@ class Geometry:
 
         rho, theta = grid.rho, grid.theta
         cos_theta, sin_theta = grid.cos_theta, grid.sin_theta
+        cos_2theta, sin_2theta = grid.cos_2theta, grid.sin_2theta
         weights = grid.weights
 
         h = h_profile
@@ -227,6 +228,8 @@ class Geometry:
             theta,
             cos_theta,
             sin_theta,
+            cos_2theta,
+            sin_2theta,
             weights,
             h.u,
             h.u_r,
