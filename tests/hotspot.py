@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+import importlib
 from time import perf_counter
 from typing import Callable
 
 import numpy as np
 
-import veqpy.model.geometry as geometry_module
-import veqpy.model.profile as profile_module
-import veqpy.operator.operator as operator_module
+geometry_module = importlib.import_module("veqpy.model.geometry")
+profile_module = importlib.import_module("veqpy.model.profile")
+operator_module = importlib.import_module("veqpy.operator.operator")
 from veqpy.model import Grid
 from veqpy.operator import Operator, OperatorCase
 from veqpy.solver import Solver, SolverConfig
@@ -90,22 +91,22 @@ class ProbeSummary:
             )
 
         stage_a = self.metric("operator.stage_a_profile")
-        decode = self.metric("stage_a.decode_packed_state_inplace")
-        fill_rows = self.metric("stage_a.fill_profile_rows")
-        profile_update = self.metric("stage_a.profile_update")
+        decode = self.metric("stage_a.decode_packed_state_active_trusted")
+        fill_rows = self.metric("stage_a.fill_profile_views")
+        profile_update = self.metric("stage_a.fill_profile_runtime_view")
         profile_kernel = self.metric("stage_a.engine.update_profile")
         lines.append("stage_a detail:")
         lines.append(
             f"  decode packed x -> coeff_matrix: {decode / 1000:.3f} ms "
-            f"(calls={self.count('stage_a.decode_packed_state_inplace')})"
+            f"(calls={self.count('stage_a.decode_packed_state_active_trusted')})"
         )
         lines.append(
-            f"  fill profile rows: {fill_rows / 1000:.3f} ms "
-            f"(calls={self.count('stage_a.fill_profile_rows')})"
+            f"  fill profile views: {fill_rows / 1000:.3f} ms "
+            f"(calls={self.count('stage_a.fill_profile_views')})"
         )
         lines.append(
-            f"  Profile.update total: {profile_update / 1000:.3f} ms "
-            f"(calls={self.count('stage_a.profile_update')})"
+            f"  fill_profile_runtime_view total: {profile_update / 1000:.3f} ms "
+            f"(calls={self.count('stage_a.fill_profile_runtime_view')})"
         )
         lines.append(
             f"  engine.update_profile: {profile_kernel / 1000:.3f} ms "
@@ -280,7 +281,6 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
         target_operator.F_profile,
     )
     target_profile_ids = {id(profile) for profile in target_profiles}
-
     def wrap_attempt(original: Callable) -> Callable:
         def wrapped(self, *args, **kwargs):
             if self is not target_solver:
@@ -362,11 +362,11 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
             try:
                 return original(*args, **kwargs)
             finally:
-                summary.add("stage_a.decode_packed_state_inplace", (perf_counter() - started) * 1e6)
+                summary.add("stage_a.decode_packed_state_active_trusted", (perf_counter() - started) * 1e6)
 
         return wrapped
 
-    def wrap_fill_rows(original: Callable) -> Callable:
+    def wrap_fill_views(original: Callable) -> Callable:
         def wrapped(self, *args, **kwargs):
             if self is not target_operator:
                 return original(self, *args, **kwargs)
@@ -374,7 +374,17 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
             try:
                 return original(self, *args, **kwargs)
             finally:
-                summary.add("stage_a.fill_profile_rows", (perf_counter() - started) * 1e6)
+                summary.add("stage_a.fill_profile_views", (perf_counter() - started) * 1e6)
+
+        return wrapped
+
+    def wrap_runtime_view_fill(original: Callable) -> Callable:
+        def wrapped(view, *args, **kwargs):
+            started = perf_counter()
+            try:
+                return original(view, *args, **kwargs)
+            finally:
+                summary.add("stage_a.fill_profile_runtime_view", (perf_counter() - started) * 1e6)
 
         return wrapped
 
@@ -386,7 +396,7 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
             try:
                 return original(self, *args, **kwargs)
             finally:
-                summary.add("stage_a.profile_update", (perf_counter() - started) * 1e6)
+                summary.add("stage_a.fill_profile_runtime_view", (perf_counter() - started) * 1e6)
 
         return wrapped
 
@@ -577,9 +587,37 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
         stack.enter_context(_patch_method(Operator, "stage_b_geometry", wrap_stage("operator.stage_b_geometry")))
         stack.enter_context(_patch_method(Operator, "stage_c_source", wrap_stage("operator.stage_c_source")))
         stack.enter_context(_patch_method(Operator, "stage_d_residual", wrap_stage("operator.stage_d_residual")))
-        stack.enter_context(_patch_attr(operator_module, "decode_packed_state_inplace", wrap_decode(operator_module.decode_packed_state_inplace)))
-        stack.enter_context(_patch_method(Operator, "_fill_profile_rows", wrap_fill_rows))
-        stack.enter_context(_patch_method(profile_module.Profile, "update", wrap_profile_update))
+        decode_trusted = getattr(operator_module, "decode_packed_state_active_trusted", None)
+        decode_safe = getattr(operator_module, "decode_packed_state_inplace", None)
+        if decode_trusted is not None:
+            stack.enter_context(
+                _patch_attr(
+                    operator_module,
+                    "decode_packed_state_active_trusted",
+                    wrap_decode(decode_trusted),
+                )
+            )
+        elif decode_safe is not None:
+            stack.enter_context(
+                _patch_attr(
+                    operator_module,
+                    "decode_packed_state_inplace",
+                    wrap_decode(decode_safe),
+                )
+            )
+        fill_method_name = "_fill_profile_views"
+        stack.enter_context(_patch_method(Operator, fill_method_name, wrap_fill_views))
+        runtime_fill = getattr(operator_module, "fill_profile_runtime_view", None)
+        if runtime_fill is not None:
+            stack.enter_context(
+                _patch_attr(
+                    operator_module,
+                    "fill_profile_runtime_view",
+                    wrap_runtime_view_fill(runtime_fill),
+                )
+            )
+        else:
+            stack.enter_context(_patch_method(profile_module.Profile, "update", wrap_profile_update))
         stack.enter_context(_patch_attr(profile_module, "update_profile", wrap_profile_kernel(profile_module.update_profile)))
         stack.enter_context(_patch_method(geometry_module.Geometry, "update", wrap_geometry_update))
         stack.enter_context(_patch_attr(geometry_module, "update_geometry", wrap_geometry_kernel(geometry_module.update_geometry)))

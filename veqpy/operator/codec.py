@@ -107,12 +107,33 @@ def decode_packed_state_inplace(
         raise ValueError(f"Expected coeff_matrix shape {coeff_index.shape}, got {coeff_matrix.shape}")
 
     coeff_matrix.fill(0.0)
-    for p in range(PROFILE_COUNT):
-        L = int(profile_L[p])
-        if L < 0:
-            continue
-        for k in range(L + 1):
-            coeff_matrix[p, k] = x[coeff_index[p, k]]
+    _decode_rows_trusted(x, range(PROFILE_COUNT), profile_L, coeff_index, coeff_matrix)
+
+
+def decode_packed_state_active_trusted(
+    x: np.ndarray,
+    active_profile_ids: np.ndarray,
+    profile_L: np.ndarray,
+    coeff_index: np.ndarray,
+    coeff_matrix: np.ndarray,
+) -> None:
+    """
+    仅解码 active profile 行的内部热路径入口.
+
+    这个函数假定调用方已经完成 x 与 layout 的兼容性校验.
+    它不会重复做 public codec 的完整安全检查, 也不会清空 inactive 行.
+
+    Args:
+        x: 已经通过 Operator.coerce_x() 的 packed 状态向量.
+        active_profile_ids: 当前 layout 中 active profile 的编号集合.
+        profile_L: 各 profile 的最高阶数向量.
+        coeff_index: 当前 layout 的 packed 索引矩阵.
+        coeff_matrix: 调用方持有的输出系数矩阵.
+
+    Returns:
+        返回 None. active profile 的系数会原地写入 coeff_matrix 对应行.
+    """
+    _decode_rows_trusted(x, active_profile_ids, profile_L, coeff_index, coeff_matrix)
 
 
 def decode_packed_blocks(
@@ -145,3 +166,19 @@ def decode_packed_blocks(
         else:
             blocks.append(coeff_matrix[p, : L + 1].copy())
     return tuple(blocks)
+
+
+def _decode_rows_trusted(
+    x: np.ndarray,
+    profile_ids,
+    profile_L: np.ndarray,
+    coeff_index: np.ndarray,
+    coeff_matrix: np.ndarray,
+) -> None:
+    for p in profile_ids:
+        row = int(p)
+        L = int(profile_L[row])
+        if L < 0:
+            continue
+        for k in range(L + 1):
+            coeff_matrix[row, k] = x[coeff_index[row, k]]

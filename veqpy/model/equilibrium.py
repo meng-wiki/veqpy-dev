@@ -776,6 +776,7 @@ def _build_surface_panel_data(equilibrium: Equilibrium) -> dict:
     R = equilibrium.geometry.R
     Z = equilibrium.geometry.Z
     rho = equilibrium.rho
+    Nt = equilibrium.grid.Nt
 
     sample_rho = np.linspace(0.0, 1.0, 12)
     surfaces = []
@@ -791,8 +792,21 @@ def _build_surface_panel_data(equilibrium: Equilibrium) -> dict:
             }
         )
 
+    theta_count = min(max(Nt, 1), 16)
+    theta_indices = np.unique(np.linspace(0, Nt - 1, theta_count, dtype=int))
+    rays = []
+    for theta_idx in theta_indices:
+        rays.append(
+            {
+                "theta_index": int(theta_idx),
+                "R": np.asarray(R[:, theta_idx], dtype=np.float64),
+                "Z": np.asarray(Z[:, theta_idx], dtype=np.float64),
+            }
+        )
+
     return {
         "surfaces": surfaces,
+        "rays": rays,
         "axis": {"R": float(R[0, 0]), "Z": float(Z[0, 0])},
         "center": {"R": float(equilibrium.R0), "Z": float(equilibrium.Z0)},
         "boundary": {"R": _close_periodic_curve(R[-1, :]), "Z": _close_periodic_curve(Z[-1, :])},
@@ -898,9 +912,12 @@ def _add_top_headroom(ax: plt.Axes, ratio: float) -> None:
 
 def _render_panel_a_surfaces(ax: plt.Axes, fig: plt.Figure, data: dict):
     ax.set_title("(a) Flux Surfaces")
+    for ray in data.get("rays", []):
+        ax.plot(ray["R"], ray["Z"], color="#9aa0a6", linewidth=0.8, alpha=0.55, zorder=1)
+
     colors = plt.cm.inferno(np.linspace(0.0, 1.0, max(len(data["surfaces"]), 1)) * 0.77 + 0.15)
     for ci, surf in enumerate(data["surfaces"]):
-        ax.plot(surf["R"], surf["Z"], color=colors[min(ci, len(colors) - 1)])
+        ax.plot(surf["R"], surf["Z"], color=colors[min(ci, len(colors) - 1)], zorder=2)
 
     ax.plot(
         data["axis"]["R"],

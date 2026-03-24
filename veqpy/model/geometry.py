@@ -158,19 +158,63 @@ class Geometry:
         Returns:
             无返回值. 当前对象的二维几何场和一维几何积分量会被原地更新.
         """
-        if self.R.shape != (grid.Nr, grid.Nt):
-            raise ValueError(f"Expected geometry shape {(self.R.shape[0], self.R.shape[1])}, got {(grid.Nr, grid.Nt)}")
+        tbf = self._tb_fields
+        Rf = self._R_fields
+        Zf = self._Z_fields
+        Jf = self._J_fields
+        Mf = self._M_fields
+
+        if Rf.R.shape != (grid.Nr, grid.Nt):
+            raise ValueError(f"Expected geometry shape {(Rf.R.shape[0], Rf.R.shape[1])}, got {(grid.Nr, grid.Nt)}")
 
         rho, theta = grid.rho, grid.theta
         cos_theta, sin_theta = grid.cos_theta, grid.sin_theta
         weights = grid.weights
 
+        h = h_profile
+        v = v_profile
+        k = k_profile
+        c0 = c0_profile
+        c1 = c1_profile
+        s1 = s1_profile
+        s2 = s2_profile
+
         update_geometry(
-            *self._tb_fields,
-            *self._R_fields,
-            *self._Z_fields,
-            *self._J_fields,
-            *self._M_fields,
+            tbf.tb,
+            tbf.cos_tb,
+            tbf.sin_tb,
+            tbf.tb_r,
+            tbf.tb_t,
+            tbf.tb_rr,
+            tbf.tb_rt,
+            tbf.tb_tt,
+            Rf.R,
+            Rf.R_r,
+            Rf.R_t,
+            Rf.R_rr,
+            Rf.R_rt,
+            Rf.R_tt,
+            Zf.Z,
+            Zf.Z_r,
+            Zf.Z_t,
+            Zf.Z_rr,
+            Zf.Z_rt,
+            Zf.Z_tt,
+            Jf.J,
+            Jf.J_r,
+            Jf.J_t,
+            Jf.JR,
+            Jf.JR_r,
+            Jf.JR_t,
+            Jf.JdivR,
+            Jf.JdivR_r,
+            Mf.grt,
+            Mf.grt_t,
+            Mf.gtt,
+            Mf.gtt_r,
+            Mf.gttdivJR,
+            Mf.gttdivJR_r,
+            Mf.grtdivJR_t,
             self.S_r,
             self.V_r,
             self.Kn,
@@ -184,13 +228,27 @@ class Geometry:
             cos_theta,
             sin_theta,
             weights,
-            *h_profile,
-            *v_profile,
-            *k_profile,
-            *c0_profile,
-            *c1_profile,
-            *s1_profile,
-            *s2_profile,
+            h.u,
+            h.u_r,
+            h.u_rr,
+            v.u,
+            v.u_r,
+            v.u_rr,
+            k.u,
+            k.u_r,
+            k.u_rr,
+            c0.u,
+            c0.u_r,
+            c0.u_rr,
+            c1.u,
+            c1.u_r,
+            c1.u_rr,
+            s1.u,
+            s1.u_r,
+            s1.u_rr,
+            s2.u,
+            s2.u_r,
+            s2.u_rr,
         )
 
     @property

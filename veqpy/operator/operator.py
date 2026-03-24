@@ -26,7 +26,9 @@ from veqpy.engine import (
     validate_operator,
 )
 from veqpy.model import Equilibrium, Geometry, Grid, Profile
+from veqpy.model.profile import ProfileRuntimeView, fill_profile_runtime_view
 from veqpy.operator.codec import (
+    decode_packed_state_active_trusted,
     decode_packed_blocks,
     decode_packed_state_inplace,
     encode_packed_residual,
@@ -40,14 +42,6 @@ from veqpy.operator.layout import (
     packed_size,
 )
 from veqpy.operator.operator_case import OperatorCase
-
-
-@dataclass(slots=True, frozen=True)
-class ProfileFillSlot:
-    """描述一个 profile 填充动作的轻量槽位."""
-
-    fill: Callable[[], None]
-
 
 @dataclass(slots=True, frozen=True)
 class ResidualAssembleSlot:
@@ -112,7 +106,9 @@ class Operator:
     active_profile_mask: np.ndarray = field(init=False, repr=False)
     active_profile_ids: np.ndarray = field(init=False, repr=False)
     x_size: int = field(init=False, repr=False)
-    profile_fill_slots: tuple[ProfileFillSlot, ...] = field(init=False, repr=False)
+    profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
+    active_profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
+    fixed_profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
     residual_slots: tuple[ResidualAssembleSlot, ...] = field(init=False, repr=False)
     source_runner: Callable = field(init=False, repr=False)
 
@@ -129,6 +125,9 @@ class Operator:
 
         self._allocate_runtime_arrays()
         self.source_runner = bind_runner(spec.name, self.derivative)
+        self.profile_runtime_views = ()
+        self.active_profile_runtime_views = ()
+        self.fixed_profile_runtime_views = ()
         self.residual_slots = ()
         self._refresh_case_runtime()
 
@@ -350,8 +349,14 @@ class Operator:
         Returns:
             返回 None. 结果会原地写入 coeff_matrix 与各 profile 缓冲区.
         """
-        decode_packed_state_inplace(x, self.profile_L, self.coeff_index, self.coeff_matrix)
-        self._fill_profile_rows(self.active_profile_ids)
+        decode_packed_state_active_trusted(
+            x,
+            self.active_profile_ids,
+            self.profile_L,
+            self.coeff_index,
+            self.coeff_matrix,
+        )
+        self._fill_profile_views(self.active_profile_runtime_views)
 
     def stage_b_geometry(self) -> None:
         """
@@ -517,7 +522,7 @@ class Operator:
     def _refresh_case_runtime(self) -> None:
         self._sync_profile_specs()
         self._load_case_coeff_matrix()
-        self.profile_fill_slots = self._build_profile_fill_slots()
+        self.profile_runtime_views = self._build_profile_runtime_views()
         self._rebind_runtime()
 
     def _sync_profile_specs(self) -> None:
@@ -570,27 +575,23 @@ class Operator:
 
     def _rebind_runtime(self) -> None:
         self.residual_slots = self._build_residual_slots()
+        self.active_profile_runtime_views = self._profile_views_from_ids(self.active_profile_ids)
         fixed_profile_ids = np.flatnonzero(~self.active_profile_mask).astype(np.int64, copy=False)
-        self._fill_profile_rows(fixed_profile_ids)
+        self.fixed_profile_runtime_views = self._profile_views_from_ids(fixed_profile_ids)
+        self._fill_profile_views(self.fixed_profile_runtime_views)
 
-    def _build_profile_fill_slots(self) -> tuple[ProfileFillSlot, ...]:
-        slots: list[ProfileFillSlot] = []
+    def _build_profile_runtime_views(self) -> tuple[ProfileRuntimeView, ...]:
+        views: list[ProfileRuntimeView] = []
         for p, profile_name in enumerate(PROFILE_NAMES):
-            slots.append(self._build_profile_fill_slot(p, profile_name))
-        return tuple(slots)
+            views.append(self._build_profile_runtime_view(p, profile_name))
+        return tuple(views)
 
-    def _build_profile_fill_slot(self, p: int, profile_name: str) -> ProfileFillSlot:
+    def _build_profile_runtime_view(self, p: int, profile_name: str) -> ProfileRuntimeView:
         L = int(self.profile_L[p])
         coeff_row = None if L < 0 else self.coeff_matrix[p, : L + 1]
         profile = getattr(self, f"{profile_name}_profile")
-        if profile_name not in _PROFILE_OFFSET_SOURCES:
-            raise ValueError(f"Unsupported profile {profile_name!r}")
         profile._bind_coeff(coeff_row)
-
-        def fill() -> None:
-            profile.update()
-
-        return ProfileFillSlot(fill=fill)
+        return profile._runtime_view()
 
     def _build_residual_slots(self) -> tuple[ResidualAssembleSlot, ...]:
         slots: list[ResidualAssembleSlot] = []
@@ -738,9 +739,12 @@ class Operator:
             assemble=assemble,
         )
 
-    def _fill_profile_rows(self, profile_ids: np.ndarray) -> None:
-        for p in profile_ids:
-            self.profile_fill_slots[int(p)].fill()
+    def _profile_views_from_ids(self, profile_ids: np.ndarray) -> tuple[ProfileRuntimeView, ...]:
+        return tuple(self.profile_runtime_views[int(p)] for p in profile_ids)
+
+    def _fill_profile_views(self, views: tuple[ProfileRuntimeView, ...]) -> None:
+        for view in views:
+            fill_profile_runtime_view(view)
 
     def _build_G_inplace(self) -> None:
         update_residual(
@@ -791,16 +795,3 @@ class Operator:
             alpha1=float(self.alpha1),
             alpha2=float(self.alpha2),
         )
-
-
-_PROFILE_OFFSET_SOURCES = {
-    "h": ("const", 0.0),
-    "v": ("const", 0.0),
-    "k": ("attr", "ka"),
-    "c0": ("attr", "c0a"),
-    "c1": ("attr", "c1a"),
-    "s1": ("attr", "s1a"),
-    "s2": ("attr", "s2a"),
-    "psin": ("const", 1.0),
-    "F": ("const", 1.0),
-}

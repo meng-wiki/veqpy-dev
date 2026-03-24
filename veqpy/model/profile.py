@@ -14,6 +14,27 @@ from veqpy.model.grid import Grid
 from veqpy.model.serial import Serial
 
 
+@dataclass(slots=True, frozen=True)
+class ProfileRuntimeView:
+    """Stage-A 热路径使用的已绑定 profile 运行时视图."""
+
+    u: np.ndarray
+    u_r: np.ndarray
+    u_rr: np.ndarray
+    T: np.ndarray
+    T_r: np.ndarray
+    T_rr: np.ndarray
+    rp: np.ndarray
+    rp_r: np.ndarray
+    rp_rr: np.ndarray
+    env: np.ndarray
+    env_r: np.ndarray
+    env_rr: np.ndarray
+    coeff: np.ndarray | None
+    offset: float
+    scale: float
+
+
 @dataclass(slots=True)
 class Profile(Serial):
     """单个一维 profile 的 runtime 容器.
@@ -127,7 +148,7 @@ class Profile(Serial):
             raise RuntimeError("Profile runtime cache is not initialized; pass grid on first update().")
         if self.u is None or self.u_r is None or self.u_rr is None:
             raise RuntimeError("Profile output buffers are not initialized; pass grid on first update().")
-        update_profile(
+        _fill_profile_outputs(
             self.u,
             self.u_r,
             self.u_rr,
@@ -142,11 +163,36 @@ class Profile(Serial):
             self._env_rr,
             self.offset,
             self.coeff,
+            self.scale,
         )
-        if self.scale != 1.0:
-            np.multiply(self.u, self.scale, out=self.u)
-            np.multiply(self.u_r, self.scale, out=self.u_r)
-            np.multiply(self.u_rr, self.scale, out=self.u_rr)
+
+    def _runtime_view(self) -> ProfileRuntimeView:
+        """导出 Stage-A 热路径所需的已绑定运行时视图."""
+        if self.u is None or self.u_r is None or self.u_rr is None:
+            raise RuntimeError("Profile output buffers are not initialized")
+        if self._T is None or self._T_r is None or self._T_rr is None:
+            raise RuntimeError("Profile runtime cache is not initialized")
+        if self._rp is None or self._rp_r is None or self._rp_rr is None:
+            raise RuntimeError("Profile power cache is not initialized")
+        if self._env is None or self._env_r is None or self._env_rr is None:
+            raise RuntimeError("Profile envelope cache is not initialized")
+        return ProfileRuntimeView(
+            u=self.u,
+            u_r=self.u_r,
+            u_rr=self.u_rr,
+            T=self._T,
+            T_r=self._T_r,
+            T_rr=self._T_rr,
+            rp=self._rp,
+            rp_r=self._rp_r,
+            rp_rr=self._rp_rr,
+            env=self._env,
+            env_r=self._env_r,
+            env_rr=self._env_rr,
+            coeff=self.coeff,
+            offset=self.offset,
+            scale=self.scale,
+        )
 
     def _bind_coeff(self, coeff: np.ndarray | None) -> None:
         """绑定并锁定 coeff 拓扑.
@@ -205,6 +251,66 @@ def _coerce_optional_array(value, *, copy: bool, name: str = "array") -> np.ndar
 
 def _copy_optional_array(value: np.ndarray | None) -> np.ndarray | None:
     return None if value is None else value.copy()
+
+
+def fill_profile_runtime_view(view: ProfileRuntimeView) -> None:
+    """用已绑定运行时视图刷新单个 profile."""
+    _fill_profile_outputs(
+        view.u,
+        view.u_r,
+        view.u_rr,
+        view.T,
+        view.T_r,
+        view.T_rr,
+        view.rp,
+        view.rp_r,
+        view.rp_rr,
+        view.env,
+        view.env_r,
+        view.env_rr,
+        view.offset,
+        view.coeff,
+        view.scale,
+    )
+
+
+def _fill_profile_outputs(
+    u: np.ndarray,
+    u_r: np.ndarray,
+    u_rr: np.ndarray,
+    T: np.ndarray,
+    T_r: np.ndarray,
+    T_rr: np.ndarray,
+    rp: np.ndarray,
+    rp_r: np.ndarray,
+    rp_rr: np.ndarray,
+    env: np.ndarray,
+    env_r: np.ndarray,
+    env_rr: np.ndarray,
+    offset: float,
+    coeff: np.ndarray | None,
+    scale: float,
+) -> None:
+    update_profile(
+        u,
+        u_r,
+        u_rr,
+        T,
+        T_r,
+        T_rr,
+        rp,
+        rp_r,
+        rp_rr,
+        env,
+        env_r,
+        env_rr,
+        offset,
+        coeff,
+    )
+    if scale != 1.0:
+        np.multiply(u, scale, out=u)
+        np.multiply(u_r, scale, out=u_r)
+        np.multiply(u_rr, scale, out=u_rr)
 
 
 def _coeff_topology(value: np.ndarray | None) -> tuple[bool, int]:
