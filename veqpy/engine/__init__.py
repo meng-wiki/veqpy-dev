@@ -15,7 +15,7 @@ if BACKEND == "numpy":
     from veqpy.engine.numpy_profile import update_profile
     from veqpy.engine.numpy_residual import (
         update_residual,
-        bind_residual_assembler,
+        bind_residual_block,
         assemble_h_residual_block,
         assemble_v_residual_block,
         assemble_k_residual_block,
@@ -45,7 +45,7 @@ elif BACKEND == "numba":
     from veqpy.engine.numba_profile import update_profile
     from veqpy.engine.numba_residual import (
         update_residual,
-        bind_residual_assembler,
+        bind_residual_block,
         assemble_h_residual_block,
         assemble_v_residual_block,
         assemble_k_residual_block,
@@ -76,7 +76,7 @@ __all__ = [
     "update_profile",
     "update_geometry",
     "update_residual",
-    "bind_residual_assembler",
+    "bind_residual_block",
     "assemble_h_residual_block",
     "assemble_v_residual_block",
     "assemble_k_residual_block",

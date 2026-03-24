@@ -12,7 +12,7 @@ from typing import Callable
 import numpy as np
 
 from veqpy.engine import (
-    bind_residual_assembler,
+    bind_residual_block,
     bind_runner,
     update_residual,
     validate_operator,
@@ -43,7 +43,7 @@ class ResidualAssembleSlot:
 
     coeff_row: np.ndarray
     coeff_indices: np.ndarray
-    assemble: Callable[[], None]
+    kernel: Callable
 
 
 @dataclass(slots=True, frozen=True)
@@ -617,19 +617,15 @@ class Operator:
         profile_name = PROFILE_NAMES[p]
         coeff_row = self.coeff_matrix[p, : L + 1]
         coeff_indices = self.coeff_index[p, : L + 1]
-        a = float(self.case.a)
-        R0 = float(self.case.R0)
-        B0 = float(self.case.B0)
         try:
-            assemble_builder = bind_residual_assembler(profile_name)
+            kernel = bind_residual_block(profile_name)
         except KeyError as exc:
             raise ValueError(f"Unsupported active profile {profile_name!r}") from exc
-        assemble = assemble_builder(self, coeff_row, a, R0, B0)
 
         return ResidualAssembleSlot(
             coeff_row=coeff_row,
             coeff_indices=coeff_indices,
-            assemble=assemble,
+            kernel=kernel,
         )
 
     def _profile_views_from_ids(self, profile_ids: np.ndarray) -> tuple[ProfileRuntimeView, ...]:
@@ -661,7 +657,25 @@ class Operator:
         )
 
     def _assemble_residual(self) -> np.ndarray:
-        return encode_packed_residual(self.residual_slots, self.x_size)
+        return encode_packed_residual(
+            self.residual_slots,
+            self.x_size,
+            self.G,
+            self.psin_R,
+            self.psin_Z,
+            self.geometry.sin_tb,
+            self.grid.sin_theta,
+            self.grid.cos_theta,
+            self.grid.sin_2theta,
+            self.grid.rho,
+            self.grid.rho2,
+            self.grid.y,
+            self.grid.T_fields[0],
+            self.grid.weights,
+            float(self.case.a),
+            float(self.case.R0),
+            float(self.case.B0),
+        )
 
     def _build_equilibrium_from_runtime(self) -> Equilibrium:
         case = self.case

@@ -11,31 +11,31 @@ import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
-class _ResidualAssemblerSpec:
+class _ResidualBlockSpec:
     name: str
     implementation: Callable
 
 
-RESIDUAL_ASSEMBLER_REGISTRY: dict[str, _ResidualAssemblerSpec] = {}
+RESIDUAL_BLOCK_REGISTRY: dict[str, _ResidualBlockSpec] = {}
 
 
-def register_residual_assembler(name: str) -> Callable:
+def register_residual_block(name: str) -> Callable:
     def decorator(func: Callable) -> Callable:
-        existing = RESIDUAL_ASSEMBLER_REGISTRY.get(name)
+        existing = RESIDUAL_BLOCK_REGISTRY.get(name)
         if existing is not None:
-            raise ValueError(f"Residual assembler {name!r} is already registered")
-        RESIDUAL_ASSEMBLER_REGISTRY[name] = _ResidualAssemblerSpec(name=name, implementation=func)
+            raise ValueError(f"Residual block {name!r} is already registered")
+        RESIDUAL_BLOCK_REGISTRY[name] = _ResidualBlockSpec(name=name, implementation=func)
         return func
 
     return decorator
 
 
-def bind_residual_assembler(name: str) -> Callable:
+def bind_residual_block(name: str) -> Callable:
     try:
-        spec = RESIDUAL_ASSEMBLER_REGISTRY[name]
+        spec = RESIDUAL_BLOCK_REGISTRY[name]
     except KeyError as exc:
-        supported = ", ".join(RESIDUAL_ASSEMBLER_REGISTRY)
-        raise KeyError(f"Unknown residual assembler {name!r}. Supported assemblers: {supported}") from exc
+        supported = ", ".join(RESIDUAL_BLOCK_REGISTRY)
+        raise KeyError(f"Unknown residual block {name!r}. Supported blocks: {supported}") from exc
     return spec.implementation
 
 
@@ -85,14 +85,24 @@ def update_residual(
     out_G[:] = alpha1 * G1n + alpha2 * G2n
 
 
+@register_residual_block("h")
 def assemble_h_residual_block(
     out: np.ndarray,
     G: np.ndarray,
     psin_R: np.ndarray,
+    psin_Z: np.ndarray,
+    sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
+    rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 h 通道的一维 residual 投影块.
@@ -107,6 +117,7 @@ def assemble_h_residual_block(
     Returns:
         返回 None. 组装后的 h 通道投影会原地写入 out.
     """
+    del psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
     collapsed_rho = np.einsum("ij,ij->i", G, psin_R)
     weighted_rho = collapsed_rho * y
     weighted_rho *= weights
@@ -114,14 +125,24 @@ def assemble_h_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("v")
 def assemble_v_residual_block(
     out: np.ndarray,
     G: np.ndarray,
+    psin_R: np.ndarray,
     psin_Z: np.ndarray,
+    sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
+    rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 v 通道的一维 residual 投影块.
@@ -136,6 +157,7 @@ def assemble_v_residual_block(
     Returns:
         返回 None. 组装后的 v 通道投影会原地写入 out.
     """
+    del psin_R, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
     collapsed_rho = np.einsum("ij,ij->i", G, psin_Z)
     weighted_rho = collapsed_rho * y
     weighted_rho *= weights
@@ -143,16 +165,24 @@ def assemble_v_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("k")
 def assemble_k_residual_block(
     out: np.ndarray,
     G: np.ndarray,
+    psin_R: np.ndarray,
     psin_Z: np.ndarray,
+    sin_tb: np.ndarray,
     sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
     rho: np.ndarray,
+    rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 k 通道的一维 residual 投影块.
@@ -168,6 +198,7 @@ def assemble_k_residual_block(
     Returns:
         返回 None. 组装后的 k 通道投影会原地写入 out.
     """
+    del psin_R, sin_tb, cos_theta, sin_2theta, rho2, R0, B0
     collapsed_rho = np.einsum("ij,ij,j->i", G, psin_Z, sin_theta)
     weighted_rho = collapsed_rho * rho * y
     weighted_rho *= weights
@@ -175,16 +206,24 @@ def assemble_k_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("c0")
 def assemble_c0_residual_block(
     out: np.ndarray,
     G: np.ndarray,
     psin_R: np.ndarray,
+    psin_Z: np.ndarray,
     sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
     rho: np.ndarray,
+    rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 c0 通道的一维 residual 投影块.
@@ -199,6 +238,7 @@ def assemble_c0_residual_block(
     Returns:
         返回 None. 组装后的 c0 通道投影会原地写入 out.
     """
+    del psin_Z, sin_theta, cos_theta, sin_2theta, rho2, R0, B0
     collapsed_rho = np.einsum("ij,ij,ij->i", G, psin_R, sin_tb)
     weighted_rho = collapsed_rho * rho * y
     weighted_rho *= weights
@@ -206,17 +246,24 @@ def assemble_c0_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("c1")
 def assemble_c1_residual_block(
     out: np.ndarray,
     G: np.ndarray,
     psin_R: np.ndarray,
+    psin_Z: np.ndarray,
     sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
     cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
     rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 c1 通道的一维 residual 投影块.
@@ -232,6 +279,7 @@ def assemble_c1_residual_block(
     Returns:
         返回 None. 组装后的 c1 通道投影会原地写入 out.
     """
+    del psin_Z, sin_theta, sin_2theta, rho, R0, B0
     collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, cos_theta)
     weighted_rho = collapsed_rho * rho2 * y
     weighted_rho *= weights
@@ -239,17 +287,24 @@ def assemble_c1_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("s1")
 def assemble_s1_residual_block(
     out: np.ndarray,
     G: np.ndarray,
     psin_R: np.ndarray,
+    psin_Z: np.ndarray,
     sin_tb: np.ndarray,
     sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
     rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 s1 通道的一维 residual 投影块.
@@ -265,6 +320,7 @@ def assemble_s1_residual_block(
     Returns:
         返回 None. 组装后的 s1 通道投影会原地写入 out.
     """
+    del psin_Z, cos_theta, sin_2theta, rho, R0, B0
     collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, sin_theta)
     weighted_rho = collapsed_rho * rho2 * y
     weighted_rho *= weights
@@ -272,11 +328,15 @@ def assemble_s1_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("s2")
 def assemble_s2_residual_block(
     out: np.ndarray,
     G: np.ndarray,
     psin_R: np.ndarray,
+    psin_Z: np.ndarray,
     sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
     sin_2theta: np.ndarray,
     rho: np.ndarray,
     rho2: np.ndarray,
@@ -284,6 +344,8 @@ def assemble_s2_residual_block(
     T: np.ndarray,
     weights: np.ndarray,
     a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 s2 通道的一维 residual 投影块.
@@ -299,6 +361,7 @@ def assemble_s2_residual_block(
     Returns:
         返回 None. 组装后的 s2 通道投影会原地写入 out.
     """
+    del psin_Z, sin_theta, cos_theta, R0, B0
     collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, sin_2theta)
     weighted_rho = collapsed_rho * rho * rho2 * y
     weighted_rho *= weights
@@ -306,13 +369,24 @@ def assemble_s2_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("psin")
 def assemble_psin_residual_block(
     out: np.ndarray,
     G: np.ndarray,
+    psin_R: np.ndarray,
+    psin_Z: np.ndarray,
+    sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
     rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
+    a: float,
+    R0: float,
+    B0: float,
 ) -> None:
     """
     组装 psin 通道的一维 residual 投影块.
@@ -326,6 +400,7 @@ def assemble_psin_residual_block(
     Returns:
         返回 None. 组装后的 psin 通道投影会原地写入 out.
     """
+    del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, a, R0, B0
     collapsed_rho = np.sum(G, axis=1)
     weighted_rho = collapsed_rho * rho2 * y
     weighted_rho *= weights
@@ -333,12 +408,22 @@ def assemble_psin_residual_block(
     out[:] = T[: out.shape[0]] @ weighted_rho
 
 
+@register_residual_block("F")
 def assemble_F_residual_block(
     out: np.ndarray,
     G: np.ndarray,
+    psin_R: np.ndarray,
+    psin_Z: np.ndarray,
+    sin_tb: np.ndarray,
+    sin_theta: np.ndarray,
+    cos_theta: np.ndarray,
+    sin_2theta: np.ndarray,
+    rho: np.ndarray,
+    rho2: np.ndarray,
     y: np.ndarray,
     T: np.ndarray,
     weights: np.ndarray,
+    a: float,
     R0: float,
     B0: float,
 ) -> None:
@@ -355,152 +440,9 @@ def assemble_F_residual_block(
     Returns:
         返回 None. 组装后的 F 通道投影会原地写入 out.
     """
+    del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, a
     collapsed_rho = np.sum(G, axis=1)
     weighted_rho = collapsed_rho * y * y
     weighted_rho *= weights
     weighted_rho *= (2.0 * np.pi / G.shape[1]) * (R0 * B0)
     out[:] = T[: out.shape[0]] @ weighted_rho
-
-
-@register_residual_assembler("h")
-def _bind_h_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_h_residual_block(coeff_row, operator.G, operator.psin_R, operator.grid.y, operator.grid.T, operator.grid.weights, a)
-
-    return assemble
-
-
-@register_residual_assembler("v")
-def _bind_v_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_v_residual_block(coeff_row, operator.G, operator.psin_Z, operator.grid.y, operator.grid.T, operator.grid.weights, a)
-
-    return assemble
-
-
-@register_residual_assembler("k")
-def _bind_k_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_k_residual_block(
-            coeff_row,
-            operator.G,
-            operator.psin_Z,
-            operator.grid.sin_theta,
-            operator.grid.rho,
-            operator.grid.y,
-            operator.grid.T,
-            operator.grid.weights,
-            a,
-        )
-
-    return assemble
-
-
-@register_residual_assembler("c0")
-def _bind_c0_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_c0_residual_block(
-            coeff_row,
-            operator.G,
-            operator.psin_R,
-            operator.geometry.sin_tb,
-            operator.grid.rho,
-            operator.grid.y,
-            operator.grid.T,
-            operator.grid.weights,
-            a,
-        )
-
-    return assemble
-
-
-@register_residual_assembler("c1")
-def _bind_c1_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_c1_residual_block(
-            coeff_row,
-            operator.G,
-            operator.psin_R,
-            operator.geometry.sin_tb,
-            operator.grid.cos_theta,
-            operator.grid.rho2,
-            operator.grid.y,
-            operator.grid.T,
-            operator.grid.weights,
-            a,
-        )
-
-    return assemble
-
-
-@register_residual_assembler("s1")
-def _bind_s1_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_s1_residual_block(
-            coeff_row,
-            operator.G,
-            operator.psin_R,
-            operator.geometry.sin_tb,
-            operator.grid.sin_theta,
-            operator.grid.rho2,
-            operator.grid.y,
-            operator.grid.T,
-            operator.grid.weights,
-            a,
-        )
-
-    return assemble
-
-
-@register_residual_assembler("s2")
-def _bind_s2_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del R0, B0
-
-    def assemble() -> None:
-        assemble_s2_residual_block(
-            coeff_row,
-            operator.G,
-            operator.psin_R,
-            operator.geometry.sin_tb,
-            operator.grid.sin_2theta,
-            operator.grid.rho,
-            operator.grid.rho2,
-            operator.grid.y,
-            operator.grid.T,
-            operator.grid.weights,
-            a,
-        )
-
-    return assemble
-
-
-@register_residual_assembler("psin")
-def _bind_psin_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del a, R0, B0
-
-    def assemble() -> None:
-        assemble_psin_residual_block(coeff_row, operator.G, operator.grid.rho2, operator.grid.y, operator.grid.T, operator.grid.weights)
-
-    return assemble
-
-
-@register_residual_assembler("F")
-def _bind_F_residual_assembler(operator, coeff_row: np.ndarray, a: float, R0: float, B0: float) -> Callable[[], None]:
-    del a
-
-    def assemble() -> None:
-        assemble_F_residual_block(coeff_row, operator.G, operator.grid.y, operator.grid.T, operator.grid.weights, R0, B0)
-
-    return assemble

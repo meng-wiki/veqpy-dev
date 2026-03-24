@@ -8,11 +8,11 @@ from typing import Callable
 
 import numpy as np
 
-engine_module = importlib.import_module("veqpy.engine")
+from veqpy.operator.layout import PROFILE_NAMES
+
 geometry_module = importlib.import_module("veqpy.model.geometry")
 profile_module = importlib.import_module("veqpy.model.profile")
 operator_module = importlib.import_module("veqpy.operator.operator")
-residual_backend_module = importlib.import_module(f"veqpy.engine.{engine_module.BACKEND}_residual")
 from veqpy.model import Grid
 from veqpy.operator import Operator, OperatorCase
 from veqpy.solver import Solver, SolverConfig
@@ -630,69 +630,17 @@ def install_probe(*, solver: Solver, summary: ProbeSummary):
         stack.enter_context(
             _patch_attr(operator_module, "encode_packed_residual", wrap_encode_packed_residual(operator_module.encode_packed_residual))
         )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_h_residual_block",
-                wrap_residual_block("stage_d.block.h")(residual_backend_module.assemble_h_residual_block),
+        wrapped_slots = []
+        for p, slot in zip(target_operator.active_profile_ids, target_operator.residual_slots, strict=True):
+            profile_name = PROFILE_NAMES[int(p)]
+            wrapped_slots.append(
+                operator_module.ResidualAssembleSlot(
+                    coeff_row=slot.coeff_row,
+                    coeff_indices=slot.coeff_indices,
+                    kernel=wrap_residual_block(f"stage_d.block.{profile_name}")(slot.kernel),
+                )
             )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_v_residual_block",
-                wrap_residual_block("stage_d.block.v")(residual_backend_module.assemble_v_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_k_residual_block",
-                wrap_residual_block("stage_d.block.k")(residual_backend_module.assemble_k_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_c0_residual_block",
-                wrap_residual_block("stage_d.block.c0")(residual_backend_module.assemble_c0_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_c1_residual_block",
-                wrap_residual_block("stage_d.block.c1")(residual_backend_module.assemble_c1_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_s1_residual_block",
-                wrap_residual_block("stage_d.block.s1")(residual_backend_module.assemble_s1_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_s2_residual_block",
-                wrap_residual_block("stage_d.block.s2")(residual_backend_module.assemble_s2_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_psin_residual_block",
-                wrap_residual_block("stage_d.block.psin")(residual_backend_module.assemble_psin_residual_block),
-            )
-        )
-        stack.enter_context(
-            _patch_attr(
-                residual_backend_module,
-                "assemble_F_residual_block",
-                wrap_residual_block("stage_d.block.F")(residual_backend_module.assemble_F_residual_block),
-            )
-        )
+        stack.enter_context(_patch_attr(target_operator, "residual_slots", tuple(wrapped_slots)))
         yield
 
 
