@@ -103,6 +103,45 @@ public 接口规则:
 - solve facade 归 `veqpy/solver/`.
 - backend control surface 归 `veqpy/engine/__init__.py`.
 
+## Hot-Path ABI
+
+- engine 热路径 ABI 默认优先:
+  - `ndarray`
+  - `float`
+  - `int`
+  - 显式长度数组 / 索引数组 / code 数组
+- engine 热路径默认避免:
+  - `None`
+  - `optional(array)` / `optional(float)`
+  - Python 对象
+  - 对象 property 链式取值
+- 如果某个 public 语义需要 `None`, 应优先在 facade/operator 层 lower 成 engine-friendly ABI, 而不是把 `None` 直接送进 hot kernel.
+
+## Field Bundles
+
+- 只要存在稳定槽位顺序, engine 边界优先使用 packed field bundles, 不优先使用展开的长参数表.
+- 当前一等 field bundle 语义包括:
+  - `T_fields`
+  - `u_fields`
+  - `rp_fields`
+  - `env_fields`
+  - `tb_fields`
+  - `R_fields`
+  - `Z_fields`
+  - `J_fields`
+  - `g_fields`
+  - `root_fields`
+  - `residual_fields`
+- 语义化 property 可以保留, 但热 operator 路径优先直接使用 `*_fields[...]`.
+
+## Packed Layout Rules
+
+- packed state 和 packed residual 的唯一位置语义是 `coeff_index` / `coeff_indices`.
+- 不重新引入第二套 row-cache 协议.
+- 不重新引入 `coeff_matrix`.
+- profile 权威顺序固定为:
+  - `psin`, `F`, `h`, `v`, `k`, `c0`, `c1`, `s1`, `s2`
+
 ## Runtime Containers
 
 - `Profile` 和 `Geometry` 可以使用 frozen + inplace update 模式.

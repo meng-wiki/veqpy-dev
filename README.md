@@ -42,6 +42,41 @@ This README was prepared with Codex assistance. The source code remains the auth
 
 `veqpy.engine` defaults to `numba` when the environment variable is not set.
 
+## Current Runtime ABI
+
+- The authoritative profile order is:
+  - `psin`, `F`, `h`, `v`, `k`, `c0`, `c1`, `s1`, `s2`
+- Packed state and packed residual both use `coeff_index` / `coeff_indices` as the only layout language.
+- Stage A reads profile coefficients directly from packed `x` using `coeff_indices`.
+- Stage D writes residual blocks directly into packed residual output using `coeff_indices`.
+- `coeff_matrix` is no longer part of the runtime path.
+- Engine-facing hot-path ABI prefers packed field bundles over exploded argument lists.
+
+Current packed field bundles include:
+
+- `Grid.T_fields`
+- `Profile.u_fields`
+- `Profile.rp_fields`
+- `Profile.env_fields`
+- `Geometry.tb_fields`
+- `Geometry.R_fields`
+- `Geometry.Z_fields`
+- `Geometry.J_fields`
+- `Geometry.g_fields`
+- `Operator.root_fields`
+- `Operator.residual_fields`
+
+Named properties such as `grid.T`, `profile.u`, and `geometry.R` remain valid semantic aliases, but hot operator paths prefer direct `*_fields[...]` access.
+
+## Optional Semantics
+
+- At the public/model layer, `None` remains valid where it expresses real topology or input semantics.
+- Example: `coeffs_by_name[name] is None` means that profile is inactive in the packed layout.
+- But hot engine kernels are intentionally kept monomorphic whenever possible.
+- Therefore, hot Numba kernels prefer plain arrays and scalars over `optional(...)` arguments.
+- Packed profile execution uses empty `coeff_indices` arrays instead of `None`.
+- Source optional constraints (`Ip`, `beta`) remain a special case: semantic “optional” meaning is valid at the facade level, but hot kernels still use the current scalar ABI because direct `None` in Numba caused a measurable regression.
+
 ## Solver Capabilities
 
 - `SolverConfig.method` currently supports:
@@ -194,6 +229,7 @@ If `WARMSTART` in `tests/benchmark.py` is switched to `True`, the artifact root 
 
 - `replace_case(...)` only supports `OperatorCase` instances compatible with the packed layout.
 - `OperatorCase` is a mutable runtime case and is suitable for live updates to `Ip`, `beta`, `heat_input`, and `current_input`.
+- `replace_case(...)` may change physical inputs and profile values, but not packed topology, active profile set, or profile order.
 - `SolverRecord` copies `OperatorCase` snapshots to prevent later in-place updates from contaminating history.
 - `Grid` is immutable.
 - `Equilibrium` is a single-grid snapshot, not a solver-side mutable state object.

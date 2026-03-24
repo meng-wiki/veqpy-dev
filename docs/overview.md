@@ -20,6 +20,46 @@
 - `OperatorCase` 当前是可变 runtime case; `SolverRecord` 会复制 case snapshot.
 - `Equilibrium` 是单网格 materialized diagnostic snapshot, 不是 solver-side parametric state.
 - 当前运行时浮点基线固定为 `np.float64`.
+- 当前 profile 权威顺序固定为:
+  - `psin`, `F`, `h`, `v`, `k`, `c0`, `c1`, `s1`, `s2`
+
+# Current Hot-Path ABI
+
+- packed state 与 packed residual 的唯一 layout 语言都是 `coeff_index` / `coeff_indices`.
+- `Stage-A` 直接从 packed `x` 通过 `coeff_indices` 读取 profile 系数.
+- `Stage-D` 直接通过 `coeff_indices` 把 residual block 写回 packed residual.
+- runtime 路径里已经不再使用 `coeff_matrix`.
+- 当前保留:
+  - `Stage-A` 的 per-profile Python loop
+  - `Stage-D` 的 residual block registry
+- 当前不维护:
+  - bulk Stage-A runner
+  - engine-level bulk residual runner
+
+engine 边界当前优先使用 packed field bundles:
+
+- `Grid.T_fields`
+- `Profile.u_fields`, `Profile.rp_fields`, `Profile.env_fields`
+- `Geometry.tb_fields`, `Geometry.R_fields`, `Geometry.Z_fields`, `Geometry.J_fields`, `Geometry.g_fields`
+- `Operator.root_fields`, `Operator.residual_fields`
+
+语义化 property 仍然保留, 例如:
+
+- `grid.T`
+- `profile.u`
+- `geometry.R`
+
+但热 operator 路径应优先直接使用 `*_fields[...]`.
+
+# Optional Semantics
+
+- `None` 在 public/model 层仍然是合法语义, 用于表达真实的可选输入或 inactive topology.
+- 例如 `coeffs_by_name[name] is None` 仍表示该 profile 在 packed layout 中不激活.
+- 但 hot Numba kernels 当前优先保持单态 ABI.
+- 因此 packed profile 路径使用空 `coeff_indices` 数组表达 offset-only, 而不是把 `None` 直接送进 kernel.
+- `Ip` / `beta` 是当前唯一明确保留的例外语义点:
+  - facade 语义上它们可以被理解为 optional constraints;
+  - 但 hot source kernels 仍使用当前 scalar ABI, 因为直接把 `None` 送进 Numba 会引入可测的性能回退.
 
 # Backend Surface
 
