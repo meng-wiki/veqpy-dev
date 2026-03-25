@@ -1,9 +1,17 @@
-"""model 层的 Equilibrium 定义.
+"""
+Module: model.equilibrium
 
-属于 model 层.
-负责持有单网格上的平衡快照, 从 root fields 重新派生 geometry 和 diagnostics,
-并提供 plotting, comparison, resample 等 inspection 能力.
-不负责 solver runtime ownership, packed state, 或 residual hot path.
+Role:
+- 负责持有单网格上的平衡快照.
+- 负责从 root fields 重新派生 geometry 与 diagnostics.
+- 负责提供 plotting, comparison, resample 等 inspection 能力.
+
+Public API:
+- Equilibrium
+
+Notes:
+- `Equilibrium` 表示 snapshot, 不是 solver runtime 容器.
+- 不负责 packed state ownership, 或 residual hot path.
 """
 
 from __future__ import annotations
@@ -50,16 +58,16 @@ plt.rcParams.update(
     }
 )
 
-PROFILE_INFO = {
-    "h": (0.0, 0, "#1f77b4", r"$h$"),
-    "v": (0.0, 0, "#17becf", r"$v$"),
-    "k": ("k_profile", 0, "#ff7f0e", r"$\kappa$"),
-    "c0": ("c0_profile", 0, "#8c564b", r"$c_0$"),
-    "c1": ("c1_profile", 1, "#e377c2", r"$c_1$"),
-    "s1": ("s1_profile", 1, "#2ca02c", r"$s_1$"),
-    "s2": ("s2_profile", 2, "#d62728", r"$s_2$"),
+SHAPE_PROFILE_PLOT_META = {
+    "h": {"color": "#1f77b4", "label": r"$h$"},
+    "v": {"color": "#17becf", "label": r"$v$"},
+    "k": {"color": "#ff7f0e", "label": r"$\kappa$"},
+    "c0": {"color": "#8c564b", "label": r"$c_0$"},
+    "c1": {"color": "#e377c2", "label": r"$c_1$"},
+    "s1": {"color": "#2ca02c", "label": r"$s_1$"},
+    "s2": {"color": "#d62728", "label": r"$s_2$"},
 }
-SHAPE_PROFILE_NAMES = tuple(PROFILE_INFO)
+SHAPE_PROFILE_NAMES = tuple(SHAPE_PROFILE_PLOT_META)
 SHAPE_PROFILE_ATTR_NAMES = tuple(f"{name}_profile" for name in SHAPE_PROFILE_NAMES)
 
 BLACK = "black"
@@ -74,21 +82,7 @@ MU0 = 4e-7 * np.pi
 
 
 class Equilibrium(Reactive, Serial):
-    """磁流体平衡态对象.
-
-    Equilibrium 在当前架构中表示单网格上的 materialized diagnostic snapshot.
-
-    它持有已经在当前 grid 上物化好的 root fields:
-    - 7 个一维 shape/profile buffer
-    - psin_r, psin_rr, FFn_r, Pn_r
-    - alpha1, alpha2
-
-    它不是参数化 profile spec 的容器, 也不承诺保留 solver 侧参数化语义.
-    resample(...) 的语义是把这些 root snapshot fields 插值到目标 grid,
-    然后在目标 grid 上重新派生 geometry 和 diagnostics.
-
-    在当前架构中它属于 model/control plane, 用于 inspection/plotting.
-    """
+    """单网格上的平衡快照对象."""
 
     def __init__(
         self,
@@ -113,21 +107,7 @@ class Equilibrium(Reactive, Serial):
         alpha1: float = 1.0,
         alpha2: float = 1.0,
     ):
-        """初始化平衡快照对象.
-
-        Args:
-            R0, Z0: 几何中心坐标, 单位 m.
-            B0: 参考磁场, 单位 T.
-            a: 小半径尺度, 单位 m.
-            grid: 当前快照所属的径向和极向网格.
-            active_profiles: 当前快照中视为激活的 profile 名称列表.
-            h_profile, v_profile, k_profile, c0_profile, c1_profile, s1_profile, s2_profile:
-                当前 grid 上的 profile 快照对象.
-            FFn_r, Pn_r, psin_r, psin_rr:
-                当前 grid 上的 root fields, shape=(Nr,).
-            alpha1, alpha2:
-                当前快照关联的 source 缩放系数.
-        """
+        """初始化平衡快照对象."""
         super().__init__()
 
         self.R0 = R0
@@ -182,11 +162,7 @@ class Equilibrium(Reactive, Serial):
 
     @classmethod
     def serial_attributes(cls) -> dict[str, type]:
-        """声明可序列化的构造根状态.
-
-        Returns:
-            仅包含构造函数持有的 root snapshot fields, 不包含派生 diagnostics.
-        """
+        """声明可序列化的构造根状态."""
         attrs: dict[str, type] = {
             "R0": float,
             "Z0": float,
@@ -424,22 +400,16 @@ class Equilibrium(Reactive, Serial):
         outpath: str | Path | None = None,
         *,
         show: bool = False,
-        target_grid: Grid | None = None,
-        profile_degree: int | None = None,
-        native_grid: bool = False,
         label_ref: str = "reference",
         label_other: str = "current",
     ) -> dict[str, float]:
-        """Compare this equilibrium against another one on a shared plotting grid."""
+        """Compare this equilibrium against another one."""
 
         return plot_comparison(
             self,
             other,
             outpath=outpath,
             show=show,
-            target_grid=target_grid,
-            profile_degree=profile_degree,
-            native_grid=native_grid,
             label_ref=label_ref,
             label_other=label_other,
         )
@@ -451,18 +421,9 @@ class Equilibrium(Reactive, Serial):
         profile_degree: int | None = None,
         native_grid: bool = False,
     ) -> "Equilibrium":
-        """将当前平衡快照插值到目标网格.
+        """将当前平衡快照插值到目标网格."""
 
-        Args:
-            target_grid: 目标网格. 为 None 时使用当前 grid.
-            profile_degree: 可选的 profile 重建阶数.
-            native_grid: 为 True 时优先保留原始 profile 样本点语义.
-
-        Returns:
-            目标 grid 上重新物化的 Equilibrium 快照.
-        """
-
-        return resample_equilibrium(
+        return _resample_equilibrium_snapshot(
             self,
             target_grid=target_grid,
             profile_degree=profile_degree,
@@ -500,8 +461,7 @@ def plot_equilibrium(
 ):
     """Render the legacy 6-panel equilibrium summary for one model-side equilibrium."""
 
-    surface_eq = resample_equilibrium(
-        equilibrium,
+    surface_eq = equilibrium.resample(
         target_grid=target_grid,
         profile_degree=profile_degree,
         native_grid=native_grid,
@@ -524,33 +484,15 @@ def plot_comparison(
     outpath: str | Path | None = None,
     *,
     show: bool = False,
-    target_grid: Grid | None = None,
-    profile_degree: int | None = None,
-    native_grid: bool = False,
     label_ref: str = "reference",
     label_other: str = "current",
 ) -> dict[str, float]:
     """Render a veqpy-poor-style 3x3 comparison figure."""
-
-    if target_grid is None and not native_grid:
-        ref_plot = reference
-        other_plot = other
-    else:
-        ref_plot = resample_equilibrium(
-            reference,
-            target_grid=target_grid,
-            profile_degree=profile_degree,
-            native_grid=native_grid,
-        )
-        other_plot = resample_equilibrium(
-            other,
-            target_grid=target_grid,
-            profile_degree=profile_degree,
-            native_grid=native_grid,
-        )
+    ref_plot = reference
+    other_plot = other
 
     shape_keys = ["h", "k", "s1"]
-    groups = [(key, f"{PROFILE_INFO[key][3]}", None) for key in shape_keys]
+    groups = [(key, SHAPE_PROFILE_PLOT_META[key]["label"], None) for key in shape_keys]
     groups.extend(
         [
             ("psi_r", r"$\psi_\rho$", None),
@@ -641,21 +583,15 @@ def plot_comparison(
 
     return errors
 
-
-def resample_equilibrium(
+def _resample_equilibrium_snapshot(
     equilibrium: Equilibrium,
     *,
-    target_grid: Grid | None = None,
-    profile_degree: int | None = None,
-    native_grid: bool = False,
+    target_grid: Grid | None,
+    profile_degree: int | None,
+    native_grid: bool,
 ) -> Equilibrium:
-    """Resample one equilibrium snapshot onto another grid.
-
-    Shape profiles are re-materialized on the target grid from their
-    parameterized profile state. Source/root 1D fields are interpolated
-    onto the target grid, then geometry and diagnostics are re-derived.
-    """
-    return _build_plot_equilibrium(
+    """执行平衡快照的重采样与重新物化."""
+    return _build_resampled_equilibrium(
         equilibrium,
         target_grid=target_grid,
         profile_degree=profile_degree,
@@ -663,7 +599,7 @@ def resample_equilibrium(
     )
 
 
-def _build_plot_equilibrium(
+def _build_resampled_equilibrium(
     equilibrium: Equilibrium,
     *,
     target_grid: Grid | None,
@@ -810,7 +746,7 @@ def _build_shape_panel_data(equilibrium: Equilibrium) -> dict:
     values: dict[str, np.ndarray] = {}
     rho = equilibrium.rho
     active_set = set(equilibrium.active_profiles)
-    for key in PROFILE_INFO:
+    for key in SHAPE_PROFILE_NAMES:
         if key in active_set:
             values[key] = profiles[key].u
     return {"shape": {"rho": rho, "values": values}}
@@ -865,7 +801,7 @@ def _comparison_profile_values(equilibrium: Equilibrium, key: str) -> np.ndarray
 
 def _active_shape_keys(reference: Equilibrium, other: Equilibrium) -> list[str]:
     active_set = set(reference.active_profiles) | set(other.active_profiles)
-    return [key for key in PROFILE_INFO if key in active_set]
+    return [key for key in SHAPE_PROFILE_NAMES if key in active_set]
 
 
 def _apply_rz_limits(ax: plt.Axes, boundary_data: dict):
@@ -923,7 +859,8 @@ def _render_panel_b_shapes(ax: plt.Axes, data: dict):
     ax.set_title("(b) Shape Profiles")
     shape = data["shape"]
     for key, vals in shape["values"].items():
-        _, _, color, label = PROFILE_INFO[key]
+        color = SHAPE_PROFILE_PLOT_META[key]["color"]
+        label = SHAPE_PROFILE_PLOT_META[key]["label"]
         ax.plot(shape["rho"], vals, "-", color=color, label=label)
 
     ax.set(xlabel=r"$\rho$", ylabel="Profile")

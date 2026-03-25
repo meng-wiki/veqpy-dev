@@ -1,7 +1,16 @@
 """
-operator 层 packed codec.
-负责在 operator 边界编码和解码 packed 状态向量.
-不负责 layout 定义, source 路由, solver 终止准则.
+Module: operator.codec
+
+Role:
+- 负责在 operator 边界编码和解码 packed 状态向量.
+
+Public API:
+- encode_packed_state
+- decode_packed_blocks
+
+Notes:
+- 这里只处理 packed codec.
+- 不负责 layout 定义, source 路由, 或 solver 终止准则.
 """
 
 import numpy as np
@@ -19,17 +28,7 @@ def encode_packed_state(
     profile_L: np.ndarray,
     coeff_index: np.ndarray,
 ) -> np.ndarray:
-    """
-    按 layout 把 profile 系数字典编码成 packed 状态向量.
-
-    Args:
-        coeffs_by_name: profile 名到系数列表的映射.
-        profile_L: 各 profile 的最高阶数向量.
-        coeff_index: 当前 layout 的 packed 索引矩阵.
-
-    Returns:
-        返回一维 packed 状态向量, shape=(packed_size(coeff_index),).
-    """
+    """按 layout 把 profile 系数字典编码成 packed 状态向量."""
     x = np.empty(packed_size(coeff_index), dtype=np.float64)
 
     for p, name in enumerate(PROFILE_NAMES):
@@ -56,18 +55,7 @@ def decode_packed_blocks(
     profile_L: np.ndarray,
     coeff_index: np.ndarray,
 ) -> tuple[np.ndarray | None, ...]:
-    """
-    把 packed 状态向量解码成按 profile 分块的系数副本.
-
-    Args:
-        x: 一维 packed 状态向量.
-        profile_L: 各 profile 的最高阶数向量.
-        coeff_index: 当前 layout 的 packed 索引矩阵.
-
-    Returns:
-        返回长度为 PROFILE_COUNT 的 tuple.
-        inactive profile 位置为 None, active profile 位置为对应系数块副本.
-    """
+    """把 packed 状态向量解码成按 profile 分块的系数副本."""
     x = validate_packed_state(x, coeff_index)
 
     blocks: list[np.ndarray | None] = []

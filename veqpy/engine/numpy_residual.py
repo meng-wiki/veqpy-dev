@@ -1,7 +1,16 @@
 """
-engine 层 NumPy residual 核.
-负责计算 Grad-Shafranov residual 相关场, 并把二维残差投影到一维基函数系数空间.
-不负责算子路由, packed layout/codec, solver 收敛控制.
+Module: engine.numpy_residual
+
+Role:
+- 负责在 numpy backend 下生成 residual fields.
+- 负责把 residual blocks 组装成 packed residual.
+
+Public API:
+- update_residual
+- bind_residual_runner
+
+Notes:
+- 这个文件同时作为 residual field update 与 packed residual assembly 的 vectorized reference.
 """
 
 from dataclasses import dataclass
@@ -28,6 +37,8 @@ def register_residual_block(name: str) -> Callable:
         return func
 
     return decorator
+
+
 def bind_residual_runner(
     profile_names: tuple[str, ...],
     coeff_index_rows: np.ndarray,
@@ -97,18 +108,7 @@ def update_residual(
     J_fields: np.ndarray,
     g_fields: np.ndarray,
 ) -> None:
-    """
-    原地更新 residual 相关二维场.
-
-    Args:
-        out_fields: 调用方持有的二维输出 fields, shape=(3, nr, nt).
-        alpha1, alpha2: source 与几何项的归一化系数.
-        root_fields: 当前 grid 上的一维 root fields, shape=(4, nr).
-        R_fields, Z_fields, J_fields, g_fields: 当前几何 packed fields.
-
-    Returns:
-        返回 None. 所有 residual 相关二维场都会原地写入 out_fields.
-    """
+    """原地更新 residual 相关二维 fields."""
     out_psin_R = out_fields[0]
     out_psin_Z = out_fields[1]
     out_G = out_fields[2]
@@ -162,19 +162,7 @@ def assemble_h_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 h 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R: 二维 residual 相关场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 h 通道投影会原地写入 out.
-    """
+    """组装 h 通道 residual block."""
     del psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
     collapsed = _collapse_g_field(G, psin_R)
     _scale_and_project_rows_two(out_packed, coeff_indices, T, collapsed, y, weights, (2.0 * np.pi / G.shape[1]) * a)
@@ -200,19 +188,7 @@ def assemble_v_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 v 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_Z: 二维 residual 相关场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 v 通道投影会原地写入 out.
-    """
+    """组装 v 通道 residual block."""
     del psin_R, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
     collapsed = _collapse_g_field(G, psin_Z)
     _scale_and_project_rows_two(out_packed, coeff_indices, T, collapsed, y, weights, (2.0 * np.pi / G.shape[1]) * a)
@@ -238,23 +214,12 @@ def assemble_k_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 k 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_Z: 二维 residual 相关场, shape=(nr, nt).
-        sin_theta: theta 基函数取值, shape=(nt,).
-        rho, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 k 通道投影会原地写入 out.
-    """
+    """组装 k 通道 residual block."""
     del psin_R, sin_tb, cos_theta, sin_2theta, rho2, R0, B0
     collapsed = _collapse_g_field_theta(G, psin_Z, sin_theta)
-    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
+    _scale_and_project_rows_three(
+        out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a)
+    )
 
 
 @register_residual_block("c0")
@@ -277,22 +242,12 @@ def assemble_c0_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 c0 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        rho, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 c0 通道投影会原地写入 out.
-    """
+    """组装 c0 通道 residual block."""
     del psin_Z, sin_theta, cos_theta, sin_2theta, rho2, R0, B0
     collapsed = _collapse_g_two_fields(G, psin_R, sin_tb)
-    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
+    _scale_and_project_rows_three(
+        out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a)
+    )
 
 
 @register_residual_block("c1")
@@ -315,23 +270,12 @@ def assemble_c1_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 c1 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        cos_theta: theta 基函数取值, shape=(nt,).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 c1 通道投影会原地写入 out.
-    """
+    """组装 c1 通道 residual block."""
     del psin_Z, sin_theta, sin_2theta, rho, R0, B0
     collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, cos_theta)
-    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
+    _scale_and_project_rows_three(
+        out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a)
+    )
 
 
 @register_residual_block("s1")
@@ -354,23 +298,12 @@ def assemble_s1_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 s1 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        sin_theta: theta 基函数取值, shape=(nt,).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 s1 通道投影会原地写入 out.
-    """
+    """组装 s1 通道 residual block."""
     del psin_Z, cos_theta, sin_2theta, rho, R0, B0
     collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, sin_theta)
-    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
+    _scale_and_project_rows_three(
+        out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a)
+    )
 
 
 @register_residual_block("s2")
@@ -393,23 +326,12 @@ def assemble_s2_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 s2 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        sin_2theta: 二倍角 theta 基函数取值, shape=(nt,).
-        rho, rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 s2 通道投影会原地写入 out.
-    """
+    """组装 s2 通道 residual block."""
     del psin_Z, sin_theta, cos_theta, R0, B0
     collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, sin_2theta)
-    _scale_and_project_rows_four(out_packed, coeff_indices, T, collapsed, rho, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
+    _scale_and_project_rows_four(
+        out_packed, coeff_indices, T, collapsed, rho, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a)
+    )
 
 
 @register_residual_block("psin")
@@ -432,18 +354,7 @@ def assemble_psin_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 psin 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G: 二维 residual 场, shape=(nr, nt).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-
-    Returns:
-        返回 None. 组装后的 psin 通道投影会原地写入 out.
-    """
+    """组装 psin 通道 residual block."""
     del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, a, R0, B0
     collapsed = _collapse_g(G)
     _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, 2.0 * np.pi / G.shape[1])
@@ -469,22 +380,12 @@ def assemble_F_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 F 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G: 二维 residual 场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        R0, B0: 参考磁轴半径与磁场强度, 用于 F 通道归一化.
-
-    Returns:
-        返回 None. 组装后的 F 通道投影会原地写入 out.
-    """
+    """组装 F 通道 residual block."""
     del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, a
     collapsed = _collapse_g(G)
-    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, y, y, weights, (2.0 * np.pi / G.shape[1]) * (R0 * B0))
+    _scale_and_project_rows_three(
+        out_packed, coeff_indices, T, collapsed, y, y, weights, (2.0 * np.pi / G.shape[1]) * (R0 * B0)
+    )
 
 
 def _collapse_g(G: np.ndarray) -> np.ndarray:

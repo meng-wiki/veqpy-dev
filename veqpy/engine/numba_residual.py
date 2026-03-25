@@ -1,7 +1,17 @@
 """
-engine 层 Numba residual 核.
-负责计算 Grad-Shafranov residual 相关场, 并把二维残差投影到一维基函数系数空间.
-不负责算子路由, packed layout/codec, solver 收敛控制.
+Module: engine.numba_residual
+
+Role:
+- 负责在 numba backend 下生成 residual fields.
+- 负责把 residual blocks 组装成 packed residual.
+
+Public API:
+- update_residual
+- bind_residual_runner
+
+Notes:
+- residual block registration 保留在本模块内.
+- operator 层只负责 bind 并调用 residual runner.
 """
 
 from dataclasses import dataclass
@@ -116,18 +126,7 @@ def update_residual(
     J_fields: np.ndarray,
     g_fields: np.ndarray,
 ) -> None:
-    """
-    原地更新 residual 相关二维场.
-
-    Args:
-        out_fields: 调用方持有的二维输出 fields, shape=(3, nr, nt).
-        alpha1, alpha2: source 与几何项的归一化系数.
-        root_fields: 当前 grid 上的一维 root fields, shape=(4, nr).
-        R_fields, Z_fields, J_fields, g_fields: 当前几何 packed fields.
-
-    Returns:
-        返回 None. 所有 residual 相关二维场都会原地写入 out_fields.
-    """
+    """原地更新 residual 相关二维 fields."""
     out_psin_R = out_fields[0]
     out_psin_Z = out_fields[1]
     out_G = out_fields[2]
@@ -184,19 +183,7 @@ def assemble_h_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 h 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R: 二维 residual 相关场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 h 通道投影会原地写入 out.
-    """
+    """组装 h 通道 residual block."""
     nr = G.shape[0]
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_field(collapsed, G, psin_R)
@@ -224,19 +211,7 @@ def assemble_v_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 v 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_Z: 二维 residual 相关场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 v 通道投影会原地写入 out.
-    """
+    """组装 v 通道 residual block."""
     nr = G.shape[0]
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_field(collapsed, G, psin_Z)
@@ -264,20 +239,7 @@ def assemble_k_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 k 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_Z: 二维 residual 相关场, shape=(nr, nt).
-        sin_theta: theta 基函数取值, shape=(nt,).
-        rho, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 k 通道投影会原地写入 out.
-    """
+    """组装 k 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_field_theta(collapsed, G, psin_Z, sin_theta)
@@ -305,19 +267,7 @@ def assemble_c0_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 c0 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        rho, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 c0 通道投影会原地写入 out.
-    """
+    """组装 c0 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_two_fields(collapsed, G, psin_R, sin_tb)
@@ -345,20 +295,7 @@ def assemble_c1_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 c1 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        cos_theta: theta 基函数取值, shape=(nt,).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 c1 通道投影会原地写入 out.
-    """
+    """组装 c1 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_two_fields_theta(collapsed, G, psin_R, sin_tb, cos_theta)
@@ -386,20 +323,7 @@ def assemble_s1_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 s1 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        sin_theta: theta 基函数取值, shape=(nt,).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 s1 通道投影会原地写入 out.
-    """
+    """组装 s1 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_two_fields_theta(collapsed, G, psin_R, sin_tb, sin_theta)
@@ -427,20 +351,7 @@ def assemble_s2_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 s2 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G, psin_R, sin_tb: 二维 residual 相关场, shape=(nr, nt).
-        sin_2theta: 二倍角 theta 基函数取值, shape=(nt,).
-        rho, rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        a: 小半径尺度, 与几何单位一致.
-
-    Returns:
-        返回 None. 组装后的 s2 通道投影会原地写入 out.
-    """
+    """组装 s2 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g_two_fields_theta(collapsed, G, psin_R, sin_tb, sin_2theta)
@@ -470,18 +381,7 @@ def assemble_psin_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 psin 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G: 二维 residual 场, shape=(nr, nt).
-        rho2, y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-
-    Returns:
-        返回 None. 组装后的 psin 通道投影会原地写入 out.
-    """
+    """组装 psin 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g(collapsed, G)
@@ -509,19 +409,7 @@ def assemble_F_residual_block(
     R0: float,
     B0: float,
 ) -> None:
-    """
-    组装 F 通道的一维 residual 投影块.
-
-    Args:
-        out: 输出系数缓冲区, shape=(n_basis,).
-        G: 二维 residual 场, shape=(nr, nt).
-        y, weights: 径向权重项, shape=(nr,).
-        T: 基函数矩阵, shape=(n_basis, nr).
-        R0, B0: 参考磁轴半径与磁场强度, 用于 F 通道归一化.
-
-    Returns:
-        返回 None. 组装后的 F 通道投影会原地写入 out.
-    """
+    """组装 F 通道 residual block."""
     nr, nt = G.shape
     collapsed = np.empty(nr, dtype=G.dtype)
     _collapse_g(collapsed, G)

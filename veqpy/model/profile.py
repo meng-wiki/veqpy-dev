@@ -1,8 +1,16 @@
-"""model 层的 Profile 定义.
+"""
+Module: model.profile
 
-属于 model 层.
-负责持有单个 profile 的根参数, 以及绑定到某个 Grid 后的 u, u_r, u_rr runtime buffer.
-不负责 packed state ownership, source scaling, 或 solver orchestration.
+Role:
+- 负责持有单个 profile 的根参数与 runtime fields.
+- 负责把 coeff 在当前 Grid 上物化成 `u_fields`.
+
+Public API:
+- Profile
+
+Notes:
+- `Profile` 属于 model 层 runtime 容器.
+- 不负责 packed state ownership, source scaling, 或 solver orchestration.
 """
 
 from dataclasses import InitVar, dataclass, field
@@ -16,11 +24,7 @@ from veqpy.model.serial import Serial
 
 @dataclass(slots=True)
 class Profile(Serial):
-    """单个一维 profile 的 runtime 容器.
-
-    Profile 持有 scale, power, envelope_power, offset, coeff 等根参数.
-    绑定到某个 Grid 后, 它会物化出 u, u_r, u_rr 三个 1D runtime buffer.
-    """
+    """单个一维 profile 的 runtime 容器."""
 
     grid: InitVar[Grid | None] = None
     scale: float = 1.0
@@ -67,7 +71,7 @@ class Profile(Serial):
         return _field_slice(self.u_fields, 2)
 
     def check(self) -> None:
-        """校验根参数与可序列化字段的基本类型约束."""
+        """校验根参数与可序列化字段."""
         for key, expected in type(self).serial_attributes().items():
             value = getattr(self, key)
             if value is None:
@@ -78,7 +82,7 @@ class Profile(Serial):
                 raise ValueError(f"Attribute '{key}' must be 1D, got {value.shape}")
 
     def copy(self) -> "Profile":
-        """复制 Profile 根参数与已存在的 runtime buffer."""
+        """复制根参数与已存在的 runtime buffer."""
         out = Profile(
             scale=self.scale,
             power=self.power,
@@ -93,7 +97,7 @@ class Profile(Serial):
         return out
 
     def update(self, grid: Grid | None = None) -> None:
-        """刷新当前 grid 上的 profile 值和导数."""
+        """刷新当前 Grid 上的 profile fields."""
         if grid is not None:
             self._prepare_runtime_cache(grid)
         if self.T_fields is None:
@@ -111,7 +115,7 @@ class Profile(Serial):
         )
 
     def _prepare_runtime_cache(self, grid: Grid) -> None:
-        """绑定 Grid 并准备 profile 计算所需的只读缓存."""
+        """绑定 Grid 并准备 runtime 缓存."""
         self.T_fields = grid.T_fields
         self.rp_fields = _power_terms(grid.rho, self.power)
         self.env_fields = _envelope_terms(grid.rho, grid.rho2, grid.y, self.envelope_power)
@@ -146,6 +150,7 @@ def _fill_profile_outputs(
     coeff: np.ndarray | None,
     scale: float,
 ) -> None:
+    """根据 coeff 刷新单个 profile fields."""
     update_profile(
         u_fields,
         T_fields,
