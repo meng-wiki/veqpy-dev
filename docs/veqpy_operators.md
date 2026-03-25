@@ -1,3 +1,14 @@
+## 当前实现说明
+
+- 本文档主要描述算子模式与物理公式.
+- 当前实现上的 packed hot-path 规则以 `README.md`, `docs/overview.md`, `docs/guardrails.md` 为准.
+- 当前 profile 权威顺序固定为:
+  - `psin`, `F`, `h`, `v`, `k`, `c0`, `c1`, `s1`, `s2`
+- 当前 residual runtime 仍保持:
+  - `Stage-A` 的 per-profile Python loop
+  - `Stage-D` 的 residual block registry
+- packed state / packed residual 的位置语义统一由 `coeff_index` / `coeff_indices` 定义.
+
 ## 物理约束
 
 ### 1. 总电流约束
