@@ -8,6 +8,35 @@ a high-performance Python wrapper for plasma equilibrium simulations in magnetic
 
 This README was prepared with Codex assistance. The source code remains the authoritative reference.
 
+### Timing Scope
+
+PF mode (9 parameters, 12x12) with zeros for all coefficients:
+
+| Item                                 |       Time | Share of full solve |
+| ------------------------------------ | ---------: | ------------------: |
+| full `solver.solve(...)` wall time   | `0.585 ms` |            `100.0%` |
+| solve core (`_solve_with_fallbacks`) | `0.541 ms` |             `92.5%` |
+| SciPy solve call(s)                  | `0.496 ms` |             `84.8%` |
+| `SolverResult` construction          | `0.005 ms` |              `0.9%` |
+| `SolverRecord` construction          | `0.020 ms` |              `3.4%` |
+| `history.append(...)`                | `0.000 ms` |              `0.0%` |
+| history bookkeeping total            | `0.021 ms` |              `3.5%` |
+
+| Item                         |      Value |
+| ---------------------------- | ---------: |
+| solve success                |     `True` |
+| `nfev`                       |       `25` |
+| packed state size (`x_size`) |        `9` |
+| residual total               | `0.436 ms` |
+| average per residual         | `0.017 ms` |
+
+| Stage            | Time (ms) | Total | Engine (ms / %) |
+| ---------------- | --------: | ----: | --------------- |
+| Stage-A profile  |     0.036 |  6.2% | 0.027 (75%)     |
+| Stage-B geometry |     0.142 | 24.3% | 0.119 (84%)     |
+| Stage-C source   |     0.120 | 20.6% | 0.095 (79%)     |
+| Stage-D residual |     0.102 | 17.4% | 0.071 (70%)     |
+
 ## Project Layout
 
 - `veqpy/engine/`
@@ -99,38 +128,58 @@ Named properties such as `grid.T`, `profile.u`, and `geometry.R` remain valid se
 - Therefore:
   - use full wall-clock when you want user-visible end-to-end `solve(...)` latency
   - use `SolverResult.elapsed` when you want solve-core latency
-- The current hotspot script in [`tests/hotspot.py`](tests/hotspot.py) uses `enable_history=False`, so its reported solve totals track solve-core structure rather than full history-recording overhead.
 
-Recent warm single-solve wall-clock vs core-latency check on the demo case:
+The tables below come from a warm single solve of the demo case with internal source-level probes enabled and `enable_history=True`.
 
-- with `enable_history=False`:
-  - full `solver.solve(...)` wall-clock mean: about `1.098 ms`
-  - `SolverResult.elapsed` mean: about `1.042 ms`
-- with `enable_history=True`:
-  - full `solver.solve(...)` wall-clock mean: about `1.157 ms`
-  - `SolverResult.elapsed` mean: about `1.100 ms`
-- in both cases, the mean gap between full wall-clock and `SolverResult.elapsed` is about `0.056-0.057 ms`
+### Solve Breakdown
 
-Recent warm single-solve hotspot snapshot from `tests/hotspot.py`:
+| Item                                 |       Time | Share of full solve |
+| ------------------------------------ | ---------: | ------------------: |
+| full `solver.solve(...)` wall time   | `0.595 ms` |            `100.0%` |
+| solve core (`_solve_with_fallbacks`) | `0.550 ms` |             `92.4%` |
+| SciPy solve call(s)                  | `0.505 ms` |             `84.9%` |
+| `SolverResult` construction          | `0.005 ms` |              `0.8%` |
+| `SolverRecord` construction          | `0.020 ms` |              `3.4%` |
+| `history.append(...)`                | `0.000 ms` |              `0.0%` |
+| history bookkeeping total            | `0.021 ms` |              `3.5%` |
 
-- total profiled solve: about `0.812 ms`
-- attempt envelope: about `99.1%` of solve
-- `Operator.residual(...)`: about `84.4%` of solve
-- staged operator time: about `79.7%` of solve
+### Residual Summary
 
-Stage breakdown in that snapshot:
+| Item                         |      Value |
+| ---------------------------- | ---------: |
+| solve success                |     `True` |
+| `nfev`                       |       `25` |
+| packed state size (`x_size`) |        `9` |
+| residual calls per solve     |       `25` |
+| residual total               | `0.443 ms` |
+| average per residual         | `0.018 ms` |
 
-- `Stage-A profile`: about `14.9%` of solve
-- `Stage-B geometry`: about `20.0%` of solve
-- `Stage-C source`: about `19.2%` of solve
-- `Stage-D residual`: about `25.4%` of solve
+### Stage Totals
 
-Engine-compute share in that same snapshot:
+| Stage            | Total time | Share of full solve | Average per residual |
+| ---------------- | ---------: | ------------------: | -------------------: |
+| Stage-A profile  | `0.038 ms` |              `6.4%` |           `0.002 ms` |
+| Stage-B geometry | `0.145 ms` |             `24.3%` |           `0.006 ms` |
+| Stage-C source   | `0.121 ms` |             `20.4%` |           `0.005 ms` |
+| Stage-D residual | `0.103 ms` |             `17.4%` |           `0.004 ms` |
 
-- `Stage-A`: about `43.0%` of Stage-A
-- `Stage-B`: about `71.8%` of Stage-B
-- `Stage-C`: about `69.2%` of Stage-C
-- `Stage-D`: about `56.0%` of Stage-D
+### Stage Engine Share
+
+| Stage   | Stage total | Pure engine time | Engine share of stage | Non-engine remainder | Non-engine share of stage |
+| ------- | ----------: | ---------------: | --------------------: | -------------------: | ------------------------: |
+| Stage-A |  `0.038 ms` |       `0.027 ms` |               `71.8%` |           `0.011 ms` |                   `28.2%` |
+| Stage-B |  `0.145 ms` |       `0.128 ms` |               `88.5%` |           `0.017 ms` |                   `11.5%` |
+| Stage-C |  `0.121 ms` |       `0.096 ms` |               `79.6%` |           `0.025 ms` |                   `20.4%` |
+| Stage-D |  `0.103 ms` |       `0.072 ms` |               `69.8%` |           `0.031 ms` |                   `30.2%` |
+
+### Current Non-Engine Sources
+
+| Stage   | Main non-engine sources                                                                                                               |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Stage-A | operator-side stage call boundary and remaining profile bulk wrapper overhead around `update_profiles_packed_bulk(...)`               |
+| Stage-B | `Geometry.update(...)` wrapper, argument passing, and Python-to-engine call boundary                                                  |
+| Stage-C | `source_runner(...)` wrapper, scalar/array argument passing, and Python-to-engine call boundary                                       |
+| Stage-D | `stage_d_residual()` / `_assemble_residual()` Python shell plus fresh packed residual allocation before residual blocks write into it |
 
 ## Installation
 
@@ -148,103 +197,7 @@ py -m pip install -e .[dev]
 
 ## Minimal Example
 
-```python
-import numpy as np
-
-from veqpy.model import Grid
-from veqpy.operator import Operator, OperatorCase
-from veqpy.solver import Solver, SolverConfig
-
-grid = Grid(Nr=12, Nt=12, scheme="legendre")
-
-coeffs = {
-    "h": [0.0, 0.0, 0.0],
-    "v": None,
-    "k": [0.0, 0.0, 0.0],
-    "c0": None,
-    "c1": None,
-    "s1": [0.0, 0.0, 0.0],
-    "s2": None,
-}
-
-rho = grid.rho
-psin = rho**2
-psin_r = 2.0 * rho
-beta0 = 0.75
-alpha_p, alpha_f = 5.0, 3.32
-exp_ap, exp_af = np.exp(alpha_p), np.exp(alpha_f)
-den_p = 1.0 + exp_ap * (alpha_p - 1.0)
-den_f = 1.0 + exp_af * (alpha_f - 1.0)
-
-current_input = (1.0 - beta0) * alpha_f * (np.exp(alpha_f * psin) - exp_af) / den_f * psin_r
-heat_input = beta0 * alpha_p * (np.exp(alpha_p * psin) - exp_ap) / den_p * psin_r
-
-case = OperatorCase(
-    coeffs_by_name=coeffs,
-    a=1.05 / 1.85,
-    R0=1.05,
-    Z0=0.0,
-    B0=3.0,
-    ka=2.2,
-    s1a=float(np.arcsin(0.5)),
-    heat_input=heat_input,
-    current_input=current_input,
-    Ip=3.0e6,
-)
-
-operator = Operator(grid=grid, case=case, name="PF", derivative="rho")
-solver = Solver(operator=operator, config=SolverConfig(method="hybr", enable_warmstart=False))
-
-x = solver.solve()
-eq = solver.build_equilibrium()
-
-print(solver.result.success, x.shape)
-print(float(eq.Ip), float(eq.beta_t))
-```
-
 For a more complete runnable example, see `tests/demo.py`.
-
-## Common Commands
-
-Syntax check:
-
-```bash
-py -m compileall veqpy tests
-```
-
-Run the demo and generate demo artifacts:
-
-```bash
-py tests/demo.py
-```
-
-Run the multi-mode benchmark and delta checks:
-
-```bash
-py tests/benchmark.py
-```
-
-## Generated Artifacts
-
-After running `py tests/demo.py`, the following files are generated under `tests/`:
-
-- `demo-1.json` / `demo-1.png`
-- `demo-2.json` / `demo-2.png`
-- `demo-3.json` / `demo-3.png`
-- `demo-4.json` / `demo-4.png`
-- `demo-coeffs-comparison.png`
-- `demo-grid-comparison.png`
-- `demo-homo-comparison.png`
-
-After running `py tests/benchmark.py`, the default outputs are:
-
-- `tests/benchmark/cold-<backend>/pf_reference_summary.png`
-- `tests/benchmark/cold-<backend>/pf_reference_summary.txt`
-- `tests/benchmark/cold-<backend>/benchmark_compare.txt`
-- `tests/benchmark/cold-<backend>/benchmark_notes.txt`
-- `tests/benchmark/cold-<backend>/plots/`
-
-If `WARMSTART` in `tests/benchmark.py` is switched to `True`, the artifact root changes to `tests/benchmark/warm-<backend>/`.
 
 ## Key Files
 
