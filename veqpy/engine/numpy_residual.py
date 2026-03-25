@@ -28,17 +28,6 @@ def register_residual_block(name: str) -> Callable:
         return func
 
     return decorator
-
-
-def bind_residual_block(name: str) -> Callable:
-    try:
-        spec = RESIDUAL_BLOCK_REGISTRY[name]
-    except KeyError as exc:
-        supported = ", ".join(RESIDUAL_BLOCK_REGISTRY)
-        raise KeyError(f"Unknown residual block {name!r}. Supported blocks: {supported}") from exc
-    return spec.implementation
-
-
 def bind_residual_runner(
     profile_names: tuple[str, ...],
     coeff_index_rows: np.ndarray,
@@ -47,7 +36,11 @@ def bind_residual_runner(
 ) -> Callable:
     kernels: list[Callable] = []
     for name in profile_names:
-        kernels.append(bind_residual_block(name))
+        try:
+            kernels.append(RESIDUAL_BLOCK_REGISTRY[name].implementation)
+        except KeyError as exc:
+            supported = ", ".join(RESIDUAL_BLOCK_REGISTRY)
+            raise KeyError(f"Unknown residual block {name!r}. Supported blocks: {supported}") from exc
     bound_kernels = tuple(kernels)
 
     def runner(
@@ -183,11 +176,8 @@ def assemble_h_residual_block(
         返回 None. 组装后的 h 通道投影会原地写入 out.
     """
     del psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
-    collapsed_rho = np.einsum("ij,ij->i", G, psin_R)
-    weighted_rho = collapsed_rho * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * a
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_field(G, psin_R)
+    _scale_and_project_rows_two(out_packed, coeff_indices, T, collapsed, y, weights, (2.0 * np.pi / G.shape[1]) * a)
 
 
 @register_residual_block("v")
@@ -224,11 +214,8 @@ def assemble_v_residual_block(
         返回 None. 组装后的 v 通道投影会原地写入 out.
     """
     del psin_R, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, R0, B0
-    collapsed_rho = np.einsum("ij,ij->i", G, psin_Z)
-    weighted_rho = collapsed_rho * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * a
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_field(G, psin_Z)
+    _scale_and_project_rows_two(out_packed, coeff_indices, T, collapsed, y, weights, (2.0 * np.pi / G.shape[1]) * a)
 
 
 @register_residual_block("k")
@@ -266,11 +253,8 @@ def assemble_k_residual_block(
         返回 None. 组装后的 k 通道投影会原地写入 out.
     """
     del psin_R, sin_tb, cos_theta, sin_2theta, rho2, R0, B0
-    collapsed_rho = np.einsum("ij,ij,j->i", G, psin_Z, sin_theta)
-    weighted_rho = collapsed_rho * rho * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (-a)
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_field_theta(G, psin_Z, sin_theta)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
 
 
 @register_residual_block("c0")
@@ -307,11 +291,8 @@ def assemble_c0_residual_block(
         返回 None. 组装后的 c0 通道投影会原地写入 out.
     """
     del psin_Z, sin_theta, cos_theta, sin_2theta, rho2, R0, B0
-    collapsed_rho = np.einsum("ij,ij,ij->i", G, psin_R, sin_tb)
-    weighted_rho = collapsed_rho * rho * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (-a)
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_two_fields(G, psin_R, sin_tb)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
 
 
 @register_residual_block("c1")
@@ -349,11 +330,8 @@ def assemble_c1_residual_block(
         返回 None. 组装后的 c1 通道投影会原地写入 out.
     """
     del psin_Z, sin_theta, sin_2theta, rho, R0, B0
-    collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, cos_theta)
-    weighted_rho = collapsed_rho * rho2 * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (-a)
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, cos_theta)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
 
 
 @register_residual_block("s1")
@@ -391,11 +369,8 @@ def assemble_s1_residual_block(
         返回 None. 组装后的 s1 通道投影会原地写入 out.
     """
     del psin_Z, cos_theta, sin_2theta, rho, R0, B0
-    collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, sin_theta)
-    weighted_rho = collapsed_rho * rho2 * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (-a)
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, sin_theta)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
 
 
 @register_residual_block("s2")
@@ -433,11 +408,8 @@ def assemble_s2_residual_block(
         返回 None. 组装后的 s2 通道投影会原地写入 out.
     """
     del psin_Z, sin_theta, cos_theta, R0, B0
-    collapsed_rho = np.einsum("ij,ij,ij,j->i", G, psin_R, sin_tb, sin_2theta)
-    weighted_rho = collapsed_rho * rho * rho2 * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (-a)
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g_two_fields_theta(G, psin_R, sin_tb, sin_2theta)
+    _scale_and_project_rows_four(out_packed, coeff_indices, T, collapsed, rho, rho2, y, weights, (2.0 * np.pi / G.shape[1]) * (-a))
 
 
 @register_residual_block("psin")
@@ -473,11 +445,8 @@ def assemble_psin_residual_block(
         返回 None. 组装后的 psin 通道投影会原地写入 out.
     """
     del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, a, R0, B0
-    collapsed_rho = np.sum(G, axis=1)
-    weighted_rho = collapsed_rho * rho2 * y
-    weighted_rho *= weights
-    weighted_rho *= 2.0 * np.pi / G.shape[1]
-    out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+    collapsed = _collapse_g(G)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, rho2, y, weights, 2.0 * np.pi / G.shape[1])
 
 
 @register_residual_block("F")
@@ -514,8 +483,81 @@ def assemble_F_residual_block(
         返回 None. 组装后的 F 通道投影会原地写入 out.
     """
     del psin_R, psin_Z, sin_tb, sin_theta, cos_theta, sin_2theta, rho, rho2, a
-    collapsed_rho = np.sum(G, axis=1)
-    weighted_rho = collapsed_rho * y * y
-    weighted_rho *= weights
-    weighted_rho *= (2.0 * np.pi / G.shape[1]) * (R0 * B0)
+    collapsed = _collapse_g(G)
+    _scale_and_project_rows_three(out_packed, coeff_indices, T, collapsed, y, y, weights, (2.0 * np.pi / G.shape[1]) * (R0 * B0))
+
+
+def _collapse_g(G: np.ndarray) -> np.ndarray:
+    return np.sum(G, axis=1)
+
+
+def _collapse_g_field(G: np.ndarray, field: np.ndarray) -> np.ndarray:
+    return np.einsum("ij,ij->i", G, field)
+
+
+def _collapse_g_field_theta(G: np.ndarray, field: np.ndarray, theta_weight: np.ndarray) -> np.ndarray:
+    return np.einsum("ij,ij,j->i", G, field, theta_weight)
+
+
+def _collapse_g_two_fields(G: np.ndarray, field_a: np.ndarray, field_b: np.ndarray) -> np.ndarray:
+    return np.einsum("ij,ij,ij->i", G, field_a, field_b)
+
+
+def _collapse_g_two_fields_theta(
+    G: np.ndarray,
+    field_a: np.ndarray,
+    field_b: np.ndarray,
+    theta_weight: np.ndarray,
+) -> np.ndarray:
+    return np.einsum("ij,ij,ij,j->i", G, field_a, field_b, theta_weight)
+
+
+def _project_rows_to_packed(
+    out_packed: np.ndarray,
+    coeff_indices: np.ndarray,
+    T: np.ndarray,
+    weighted_rho: np.ndarray,
+) -> None:
     out_packed[coeff_indices] = T[: coeff_indices.shape[0]] @ weighted_rho
+
+
+def _scale_and_project_rows_two(
+    out_packed: np.ndarray,
+    coeff_indices: np.ndarray,
+    T: np.ndarray,
+    collapsed: np.ndarray,
+    weight_a: np.ndarray,
+    weight_b: np.ndarray,
+    scalar: float,
+) -> None:
+    collapsed *= weight_a * weight_b * scalar
+    _project_rows_to_packed(out_packed, coeff_indices, T, collapsed)
+
+
+def _scale_and_project_rows_three(
+    out_packed: np.ndarray,
+    coeff_indices: np.ndarray,
+    T: np.ndarray,
+    collapsed: np.ndarray,
+    weight_a: np.ndarray,
+    weight_b: np.ndarray,
+    weight_c: np.ndarray,
+    scalar: float,
+) -> None:
+    collapsed *= weight_a * weight_b * weight_c * scalar
+    _project_rows_to_packed(out_packed, coeff_indices, T, collapsed)
+
+
+def _scale_and_project_rows_four(
+    out_packed: np.ndarray,
+    coeff_indices: np.ndarray,
+    T: np.ndarray,
+    collapsed: np.ndarray,
+    weight_a: np.ndarray,
+    weight_b: np.ndarray,
+    weight_c: np.ndarray,
+    weight_d: np.ndarray,
+    scalar: float,
+) -> None:
+    collapsed *= weight_a * weight_b * weight_c * weight_d * scalar
+    _project_rows_to_packed(out_packed, coeff_indices, T, collapsed)

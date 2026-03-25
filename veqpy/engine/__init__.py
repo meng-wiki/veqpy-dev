@@ -12,20 +12,10 @@ if BACKEND not in ("numpy", "numba"):
 
 if BACKEND == "numpy":
     from veqpy.engine.numpy_geometry import update_geometry
-    from veqpy.engine.numpy_profile import update_profile, update_profile_packed, update_profiles_packed_bulk
+    from veqpy.engine.numpy_profile import update_profile, update_profiles_packed_bulk
     from veqpy.engine.numpy_residual import (
         update_residual,
-        bind_residual_block,
         bind_residual_runner,
-        assemble_h_residual_block,
-        assemble_v_residual_block,
-        assemble_k_residual_block,
-        assemble_c0_residual_block,
-        assemble_c1_residual_block,
-        assemble_s1_residual_block,
-        assemble_s2_residual_block,
-        assemble_psin_residual_block,
-        assemble_F_residual_block,
     )
     from veqpy.engine.numpy_source import (
         RHO_AXIS,
@@ -43,20 +33,10 @@ if BACKEND == "numpy":
     )
 elif BACKEND == "numba":
     from veqpy.engine.numba_geometry import update_geometry
-    from veqpy.engine.numba_profile import update_profile, update_profile_packed, update_profiles_packed_bulk
+    from veqpy.engine.numba_profile import update_profile, update_profiles_packed_bulk
     from veqpy.engine.numba_residual import (
         update_residual,
-        bind_residual_block,
         bind_residual_runner,
-        assemble_h_residual_block,
-        assemble_v_residual_block,
-        assemble_k_residual_block,
-        assemble_c0_residual_block,
-        assemble_c1_residual_block,
-        assemble_s1_residual_block,
-        assemble_s2_residual_block,
-        assemble_psin_residual_block,
-        assemble_F_residual_block,
     )
     from veqpy.engine.numba_source import (
         RHO_AXIS,
@@ -76,21 +56,10 @@ elif BACKEND == "numba":
 
 __all__ = [
     "update_profile",
-    "update_profile_packed",
     "update_profiles_packed_bulk",
     "update_geometry",
     "update_residual",
-    "bind_residual_block",
     "bind_residual_runner",
-    "assemble_h_residual_block",
-    "assemble_v_residual_block",
-    "assemble_k_residual_block",
-    "assemble_c0_residual_block",
-    "assemble_c1_residual_block",
-    "assemble_s1_residual_block",
-    "assemble_s2_residual_block",
-    "assemble_psin_residual_block",
-    "assemble_F_residual_block",
     "RHO_AXIS",
     "THETA_AXIS",
     "DERIVATIVE_NAMES",

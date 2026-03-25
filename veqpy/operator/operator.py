@@ -19,11 +19,6 @@ from veqpy.engine import (
     validate_operator,
 )
 from veqpy.model import Equilibrium, Geometry, Grid, Profile
-from veqpy.model.profile import (
-    ProfileRuntimeView,
-    fill_profile_runtime_view,
-    fill_profile_runtime_view_from_packed,
-)
 from veqpy.operator.codec import decode_packed_blocks, encode_packed_state
 from veqpy.operator.layout import (
     PROFILE_INDEX,
@@ -35,6 +30,30 @@ from veqpy.operator.layout import (
     packed_size,
 )
 from veqpy.operator.operator_case import OperatorCase
+
+
+_PROFILE_STATIC_KWARGS: dict[str, dict[str, int]] = {
+    "c1": {"power": 1},
+    "s1": {"power": 1},
+    "s2": {"power": 2},
+    "psin": {"power": 2},
+    "F": {"envelope_power": 2},
+}
+_PROFILE_OFFSET_SPECS: dict[str, float | str] = {
+    "h": 0.0,
+    "v": 0.0,
+    "k": "ka",
+    "c0": "c0a",
+    "c1": "c1a",
+    "s1": "s1a",
+    "s2": "s2a",
+    "psin": 1.0,
+    "F": 1.0,
+}
+_PROFILE_SCALE_SPECS: dict[str, tuple[str, ...]] = {
+    "F": ("R0", "B0"),
+}
+
 
 @dataclass(slots=True, frozen=True)
 class HomotopyStageGroup:
@@ -91,9 +110,6 @@ class Operator:
     active_profile_mask: np.ndarray = field(init=False, repr=False)
     active_profile_ids: np.ndarray = field(init=False, repr=False)
     x_size: int = field(init=False, repr=False)
-    profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
-    active_profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
-    fixed_profile_runtime_views: tuple[ProfileRuntimeView, ...] = field(init=False, repr=False)
     active_u_fields: np.ndarray = field(init=False, repr=False)
     active_rp_fields: np.ndarray = field(init=False, repr=False)
     active_env_fields: np.ndarray = field(init=False, repr=False)
@@ -115,13 +131,10 @@ class Operator:
         self.active_profile_mask, self.active_profile_ids = build_active_profile_metadata(self.profile_L)
         self.x_size = packed_size(self.coeff_index)
 
-        self._allocate_runtime_arrays()
+        self._setup_runtime_state()
         self.source_runner = bind_runner(spec.name, self.derivative)
-        self.profile_runtime_views = ()
-        self.active_profile_runtime_views = ()
-        self.fixed_profile_runtime_views = ()
         self.residual_runner = lambda *args, **kwargs: np.zeros(self.x_size, dtype=np.float64)
-        self._refresh_case_runtime()
+        self._refresh_runtime_state()
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """
@@ -147,7 +160,7 @@ class Operator:
         """
         self._validate_case_compatibility(case)
         self.case = case
-        self._refresh_case_runtime()
+        self._refresh_runtime_state()
 
     def encode_initial_state(self) -> np.ndarray:
         """
@@ -477,7 +490,7 @@ class Operator:
         x_full[indices] = x_values
         return x_full
 
-    def _allocate_runtime_arrays(self) -> None:
+    def _setup_runtime_state(self) -> None:
         nr = self.grid.Nr
         nt = self.grid.Nt
         n_active = int(self.active_profile_ids.size)
@@ -485,32 +498,8 @@ class Operator:
         if n_active > 0:
             max_active_len = max(int(self.profile_L[int(p)]) + 1 for p in self.active_profile_ids)
 
-        self.h_profile = Profile(offset=0.0, coeff=self._profile_coeff_from_case(PROFILE_INDEX["h"]))
-        self.v_profile = Profile(offset=0.0, coeff=self._profile_coeff_from_case(PROFILE_INDEX["v"]))
-        self.k_profile = Profile(offset=float(self.case.ka), coeff=self._profile_coeff_from_case(PROFILE_INDEX["k"]))
-        self.c0_profile = Profile(offset=float(self.case.c0a), coeff=self._profile_coeff_from_case(PROFILE_INDEX["c0"]))
-        self.c1_profile = Profile(
-            power=1,
-            offset=float(self.case.c1a),
-            coeff=self._profile_coeff_from_case(PROFILE_INDEX["c1"]),
-        )
-        self.s1_profile = Profile(
-            power=1,
-            offset=float(self.case.s1a),
-            coeff=self._profile_coeff_from_case(PROFILE_INDEX["s1"]),
-        )
-        self.s2_profile = Profile(
-            power=2,
-            offset=float(self.case.s2a),
-            coeff=self._profile_coeff_from_case(PROFILE_INDEX["s2"]),
-        )
-        self.psin_profile = Profile(power=2, offset=1.0, coeff=self._profile_coeff_from_case(PROFILE_INDEX["psin"]))
-        self.F_profile = Profile(
-            scale=self.case.R0 * self.case.B0,
-            envelope_power=2,
-            offset=1.0,
-            coeff=self._profile_coeff_from_case(PROFILE_INDEX["F"]),
-        )
+        for name in PROFILE_NAMES:
+            setattr(self, f"{name}_profile", self._make_profile(name))
 
         self.residual_fields = np.zeros((3, nr, nt), dtype=np.float64)
         self.psin_R = self.residual_fields[0]
@@ -531,45 +520,43 @@ class Operator:
         self.active_lengths = np.empty(n_active, dtype=np.int64)
         self.active_coeff_index_rows = np.full((n_active, max_active_len), -1, dtype=np.int64)
 
-    def _refresh_case_runtime(self) -> None:
-        self._sync_profile_specs()
-        self._prepare_active_stage_a_plan()
-        self.profile_runtime_views = self._build_profile_runtime_views()
-        self._rebind_runtime()
+    def _refresh_runtime_state(self) -> None:
+        self._refresh_profile_runtime()
+        self._refresh_stage_a_runtime()
+        self._refresh_runtime_bindings()
 
-    def _sync_profile_specs(self) -> None:
-        self.h_profile.offset = 0.0
-        self.v_profile.offset = 0.0
-        self.k_profile.offset = float(self.case.ka)
-        self.c0_profile.offset = float(self.case.c0a)
-        self.c1_profile.offset = float(self.case.c1a)
-        self.s1_profile.offset = float(self.case.s1a)
-        self.s2_profile.offset = float(self.case.s2a)
-        self.psin_profile.offset = 1.0
-        self.F_profile.offset = 1.0
-        self.F_profile.scale = self.case.R0 * self.case.B0
-        self.h_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["h"])
-        self.v_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["v"])
-        self.k_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["k"])
-        self.c0_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["c0"])
-        self.c1_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["c1"])
-        self.s1_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["s1"])
-        self.s2_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["s2"])
-        self.psin_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["psin"])
-        self.F_profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX["F"])
-
-        for profile in (
-            self.h_profile,
-            self.v_profile,
-            self.k_profile,
-            self.c0_profile,
-            self.c1_profile,
-            self.s1_profile,
-            self.s2_profile,
-            self.psin_profile,
-            self.F_profile,
-        ):
+    def _refresh_profile_runtime(self) -> None:
+        for name in PROFILE_NAMES:
+            profile = self._profile_by_name(name)
+            profile.offset = self._profile_offset_from_case(name)
+            profile.scale = self._profile_scale_from_case(name)
+            profile.coeff = self._profile_coeff_from_case(PROFILE_INDEX[name])
             profile._prepare_runtime_cache(self.grid)
+
+    def _make_profile(self, name: str) -> Profile:
+        kwargs: dict[str, float | int | np.ndarray | None] = dict(_PROFILE_STATIC_KWARGS.get(name, {}))
+        kwargs["offset"] = self._profile_offset_from_case(name)
+        kwargs["coeff"] = self._profile_coeff_from_case(PROFILE_INDEX[name])
+        kwargs["scale"] = self._profile_scale_from_case(name)
+        return Profile(**kwargs)
+
+    def _profile_offset_from_case(self, name: str) -> float:
+        try:
+            spec = _PROFILE_OFFSET_SPECS[name]
+        except KeyError as exc:
+            raise KeyError(f"Unknown profile name {name!r}") from exc
+        if isinstance(spec, str):
+            return float(getattr(self.case, spec))
+        return float(spec)
+
+    def _profile_scale_from_case(self, name: str) -> float:
+        attrs = _PROFILE_SCALE_SPECS.get(name)
+        if attrs is None:
+            return 1.0
+        scale = 1.0
+        for attr in attrs:
+            scale *= float(getattr(self.case, attr))
+        return scale
 
     def _profile_coeff_from_case(self, p: int) -> np.ndarray | None:
         L = int(self.profile_L[p])
@@ -592,21 +579,20 @@ class Operator:
         if case.heat_input.shape != (self.grid.Nr,) or case.current_input.shape != (self.grid.Nr,):
             raise ValueError(f"Expected heat_input/current_input to have shape ({self.grid.Nr},)")
 
-    def _rebind_runtime(self) -> None:
+    def _refresh_runtime_bindings(self) -> None:
         self.residual_runner = self._build_residual_runner()
-        self.active_profile_runtime_views = self._profile_views_from_ids(self.active_profile_ids)
         fixed_profile_ids = np.flatnonzero(~self.active_profile_mask).astype(np.int64, copy=False)
-        self.fixed_profile_runtime_views = self._profile_views_from_ids(fixed_profile_ids)
-        self._fill_profile_views(self.fixed_profile_runtime_views)
+        for p in fixed_profile_ids:
+            self._profile_by_name(PROFILE_NAMES[int(p)]).update()
 
-    def _prepare_active_stage_a_plan(self) -> None:
+    def _refresh_stage_a_runtime(self) -> None:
         if self.active_profile_ids.size == 0:
             return
 
         for slot, p in enumerate(self.active_profile_ids):
             p_int = int(p)
             profile_name = PROFILE_NAMES[p_int]
-            profile = getattr(self, f"{profile_name}_profile")
+            profile = self._profile_by_name(profile_name)
             L = int(self.profile_L[p_int])
             coeff_indices = self.coeff_index[p_int, : L + 1]
 
@@ -619,20 +605,6 @@ class Operator:
             if self.active_coeff_index_rows.shape[1] > 0:
                 self.active_coeff_index_rows[slot].fill(-1)
                 self.active_coeff_index_rows[slot, : coeff_indices.size] = coeff_indices
-
-    def _build_profile_runtime_views(self) -> tuple[ProfileRuntimeView, ...]:
-        views: list[ProfileRuntimeView] = []
-        for p, profile_name in enumerate(PROFILE_NAMES):
-            views.append(self._build_profile_runtime_view(p, profile_name))
-        return tuple(views)
-
-    def _build_profile_runtime_view(self, p: int, profile_name: str) -> ProfileRuntimeView:
-        profile = getattr(self, f"{profile_name}_profile")
-        L = int(self.profile_L[p])
-        coeff_indices = (
-            np.empty(0, dtype=np.int64) if L < 0 else self.coeff_index[p, : L + 1]
-        )
-        return profile._runtime_view(coeff_indices=coeff_indices)
 
     def _build_residual_runner(self) -> Callable:
         profile_names = tuple(PROFILE_NAMES[int(p)] for p in self.active_profile_ids)
@@ -647,17 +619,6 @@ class Operator:
             raise ValueError(
                 f"Unsupported active residual block set {profile_names!r}"
             ) from exc
-
-    def _profile_views_from_ids(self, profile_ids: np.ndarray) -> tuple[ProfileRuntimeView, ...]:
-        return tuple(self.profile_runtime_views[int(p)] for p in profile_ids)
-
-    def _fill_profile_views(self, views: tuple[ProfileRuntimeView, ...]) -> None:
-        for view in views:
-            fill_profile_runtime_view(view)
-
-    def _fill_profile_views_from_packed(self, x: np.ndarray, views: tuple[ProfileRuntimeView, ...]) -> None:
-        for view in views:
-            fill_profile_runtime_view_from_packed(view, x)
 
     def _fill_active_profile_views_from_packed_bulk(self, x: np.ndarray) -> None:
         if self.active_profile_ids.size == 0:
@@ -707,7 +668,7 @@ class Operator:
 
     def _build_equilibrium_from_runtime(self, x: np.ndarray) -> Equilibrium:
         coeff_blocks = decode_packed_blocks(x, self.profile_L, self.coeff_index)
-        snapshot_profiles = self._snapshot_profiles(coeff_blocks)
+        snapshot_profiles = self._snapshot_equilibrium_profiles(coeff_blocks)
         case = self.case
         return Equilibrium(
             R0=case.R0,
@@ -716,13 +677,7 @@ class Operator:
             a=case.a,
             grid=self.grid,
             active_profiles=[name for name in SHAPE_PROFILE_NAMES if case.coeffs_by_name[name] is not None],
-            h_profile=snapshot_profiles["h"],
-            v_profile=snapshot_profiles["v"],
-            k_profile=snapshot_profiles["k"],
-            c0_profile=snapshot_profiles["c0"],
-            c1_profile=snapshot_profiles["c1"],
-            s1_profile=snapshot_profiles["s1"],
-            s2_profile=snapshot_profiles["s2"],
+            **self._equilibrium_profile_kwargs(snapshot_profiles),
             FFn_r=self.FFn_r.copy(),
             Pn_r=self.Pn_r.copy(),
             psin_r=self.psin_r.copy(),
@@ -731,11 +686,19 @@ class Operator:
             alpha2=float(self.alpha2),
         )
 
-    def _snapshot_profiles(self, coeff_blocks: tuple[np.ndarray | None, ...]) -> dict[str, Profile]:
-        snapshots: dict[str, Profile] = {}
-        for name in PROFILE_NAMES:
-            profile = getattr(self, f"{name}_profile")
-            copied = profile.copy()
-            copied.coeff = None if coeff_blocks[PROFILE_INDEX[name]] is None else coeff_blocks[PROFILE_INDEX[name]].copy()
-            snapshots[name] = copied
-        return snapshots
+    def _profile_by_name(self, name: str) -> Profile:
+        return getattr(self, f"{name}_profile")
+
+    def _snapshot_profile(self, name: str, coeff_block: np.ndarray | None) -> Profile:
+        copied = self._profile_by_name(name).copy()
+        copied.coeff = None if coeff_block is None else coeff_block.copy()
+        return copied
+
+    def _snapshot_equilibrium_profiles(self, coeff_blocks: tuple[np.ndarray | None, ...]) -> dict[str, Profile]:
+        return {
+            name: self._snapshot_profile(name, coeff_blocks[PROFILE_INDEX[name]])
+            for name in SHAPE_PROFILE_NAMES
+        }
+
+    def _equilibrium_profile_kwargs(self, snapshots: dict[str, Profile]) -> dict[str, Profile]:
+        return {f"{name}_profile": snapshots[name] for name in SHAPE_PROFILE_NAMES}

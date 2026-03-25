@@ -59,6 +59,8 @@ PROFILE_INFO = {
     "s1": ("s1_profile", 1, "#2ca02c", r"$s_1$"),
     "s2": ("s2_profile", 2, "#d62728", r"$s_2$"),
 }
+SHAPE_PROFILE_NAMES = tuple(PROFILE_INFO)
+SHAPE_PROFILE_ATTR_NAMES = tuple(f"{name}_profile" for name in SHAPE_PROFILE_NAMES)
 
 BLACK = "black"
 BLUE = mcolors.TABLEAU_COLORS["tab:blue"]
@@ -133,7 +135,7 @@ class Equilibrium(Reactive, Serial):
         self.B0 = B0
         self.a = a
         self.grid = grid
-        self.active_profiles = list(PROFILE_INFO) if active_profiles is None else list(active_profiles)
+        self.active_profiles = list(SHAPE_PROFILE_NAMES) if active_profiles is None else list(active_profiles)
 
         self.h_profile = h_profile
         self.v_profile = v_profile
@@ -143,15 +145,7 @@ class Equilibrium(Reactive, Serial):
         self.s1_profile = s1_profile
         self.s2_profile = s2_profile
 
-        for profile in (
-            self.h_profile,
-            self.v_profile,
-            self.k_profile,
-            self.c0_profile,
-            self.c1_profile,
-            self.s1_profile,
-            self.s2_profile,
-        ):
+        for profile in _shape_profiles(self).values():
             profile.update(grid=self.grid)
 
         if psin_rr is None:
@@ -193,20 +187,13 @@ class Equilibrium(Reactive, Serial):
         Returns:
             仅包含构造函数持有的 root snapshot fields, 不包含派生 diagnostics.
         """
-        return {
+        attrs: dict[str, type] = {
             "R0": float,
             "Z0": float,
             "B0": float,
             "a": float,
             "grid": Grid,
             "active_profiles": list[str],
-            "h_profile": Profile,
-            "v_profile": Profile,
-            "k_profile": Profile,
-            "c0_profile": Profile,
-            "c1_profile": Profile,
-            "s1_profile": Profile,
-            "s2_profile": Profile,
             "FFn_r": np.ndarray,
             "Pn_r": np.ndarray,
             "psin_r": np.ndarray,
@@ -214,6 +201,8 @@ class Equilibrium(Reactive, Serial):
             "alpha1": float,
             "alpha2": float,
         }
+        attrs.update({attr_name: Profile for attr_name in SHAPE_PROFILE_ATTR_NAMES})
+        return attrs
 
     @property
     def rho(self) -> np.ndarray:
@@ -492,6 +481,14 @@ def _extrapolate_inplace(
         y[0] = (y[1] * r2 - y[2] * r1) / (r2 - r1)
 
 
+def _shape_profiles(equilibrium: Equilibrium) -> dict[str, Profile]:
+    return {name: getattr(equilibrium, f"{name}_profile") for name in SHAPE_PROFILE_NAMES}
+
+
+def _shape_profile_kwargs(profiles: dict[str, Profile]) -> dict[str, Profile]:
+    return {f"{name}_profile": profiles[name] for name in SHAPE_PROFILE_NAMES}
+
+
 def plot_equilibrium(
     equilibrium: Equilibrium,
     outpath: str | Path | None = None,
@@ -724,13 +721,7 @@ def _build_plot_equilibrium(
         a=equilibrium.a,
         grid=plot_grid,
         active_profiles=equilibrium.active_profiles,
-        h_profile=_resample_profile_triplet(equilibrium.h_profile),
-        v_profile=_resample_profile_triplet(equilibrium.v_profile),
-        k_profile=_resample_profile_triplet(equilibrium.k_profile),
-        c0_profile=_resample_profile_triplet(equilibrium.c0_profile),
-        c1_profile=_resample_profile_triplet(equilibrium.c1_profile),
-        s1_profile=_resample_profile_triplet(equilibrium.s1_profile),
-        s2_profile=_resample_profile_triplet(equilibrium.s2_profile),
+        **_shape_profile_kwargs({name: _resample_profile_triplet(profile) for name, profile in _shape_profiles(equilibrium).items()}),
         FFn_r=FFn_r,
         Pn_r=Pn_r,
         psin_r=psin_r,
@@ -814,15 +805,7 @@ def _build_surface_panel_data(equilibrium: Equilibrium) -> dict:
 
 
 def _build_shape_panel_data(equilibrium: Equilibrium) -> dict:
-    profiles = dict(
-        h=equilibrium.h_profile,
-        v=equilibrium.v_profile,
-        k=equilibrium.k_profile,
-        c0=equilibrium.c0_profile,
-        c1=equilibrium.c1_profile,
-        s1=equilibrium.s1_profile,
-        s2=equilibrium.s2_profile,
-    )
+    profiles = _shape_profiles(equilibrium)
 
     values: dict[str, np.ndarray] = {}
     rho = equilibrium.rho
