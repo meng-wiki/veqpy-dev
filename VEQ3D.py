@@ -14,7 +14,7 @@ class VEQ3D_Solver:
         # =========================================================
         self.M_pol = 1
         self.N_tor = 1
-        self.L_rad = 4
+        self.L_rad = 3
         # =========================================================
         
         self.Nt = 19
@@ -204,8 +204,10 @@ class VEQ3D_Solver:
             
             thR = TH_F + c0R_v + tR_v
             thZ = TH_F + c0Z_v + tZ_v
-            R_mod = R0 + h_v + a_v * np.cos(thR)
-            Z_mod = Z0 + v_v + k_v * a_v * np.sin(thZ)
+            
+            # 使用全新的公式：rho在边界处为1
+            R_mod = R0 + a_v * (h_v + np.cos(thR))
+            Z_mod = Z0 + a_v * (v_v - k_v * np.sin(thZ))
             
             res_geom = np.concatenate([(R_mod - R_target).flatten(), (Z_mod - Z_target).flatten()])
             res_reg = np.array([h_c[0], v_c[0]]) * 100.0
@@ -216,14 +218,15 @@ class VEQ3D_Solver:
         else:
             p0 = np.zeros(self.num_edge_params)
             p0[0] = 10.0 
-            p0[2] = np.pi 
-            p0[2 + 4 * self.len_1d] = 1.0 
-            p0[2 + 5 * self.len_1d] = 1.0 
+            p0[2] = np.pi # c0R 初始偏置 
+            p0[2 + self.len_1d] = np.pi # c0Z 初始偏置，用于配平 sin 中增加的负号
+            p0[2 + 4 * self.len_1d] = 1.0 # k
+            p0[2 + 5 * self.len_1d] = 1.0 # a
         
         res = least_squares(boundary_residuals, p0, method='trf', ftol=1e-12)
         self.p_edge = res.x
 
-    def _build_jax_residual_fn(self):
+    def _build_jax_residual_fn(self, pressure_scale_factor=1.0):
         RHO = jnp.array(self.RHO)
         TH = jnp.array(self.TH)
         ZE = jnp.array(self.ZE)
@@ -254,12 +257,19 @@ class VEQ3D_Solver:
         dtheta = self.dtheta
         dzeta = self.dzeta
 
-        # 提取各个Lambda模式的极向阶数m，用于构造 rho^m
         if self.len_lam > 0:
             lam_m_vals = jnp.array([m for m, n in self.lambda_modes])
         else:
             lam_m_vals = jnp.array([])
 
+        # --- 为新增正则化预计算模式惩罚权重 ---
+        if self.len_2d > 0:
+            m_vals_2d = jnp.array([m for m, n, typ in self.modes_2d])
+            n_vals_2d = jnp.array([n for m, n, typ in self.modes_2d])
+            # 正则化机制 1 权重：为避免与边界形变发生拉扯冲突，将基础权重下调到 1e-6，
+            # 并乘以 (m^2+n^2) 迫使高频模式尽量压缩。
+            reg_weight_2d = jnp.sqrt(1e-6 * (m_vals_2d**2 + n_vals_2d**2))
+            
         def jax_unpack_edge(p):
             idx = 2
             def get(L):
@@ -310,38 +320,26 @@ class VEQ3D_Solver:
             e_R0, e_Z0, e_c0R, e_c0Z, e_h, e_v, e_k, e_a, e_tR, e_tZ = jax_unpack_edge(p_edge)
             c_c0R, c_c0Z, c_h, c_v, c_k, c_a, c_tR, c_tZ, c_lam = jax_unpack_core(x_core)
 
-            # ========================================================
-            # [核心提速优化] 1D 和 2D 求解器全部改用 CPU 最爱的内积+Einsum
-            # 彻底摒弃内存开销巨大的多维张量 Broadcasting
-            # ========================================================
             def eval_1d(c_e, c_c):
-                # c_c: (L_rad, len_1d) -> .T -> (len_1d, L_rad)
-                # fac_rad: (L_rad, Nr) 
-                core_contrib = jnp.dot(c_c.T, fac_rad)  # (len_1d, Nr)
-                ce_eff = c_e[:, None] + core_contrib    # (len_1d, Nr)
-                
-                b_val = basis_1d_val[:, 0, 0, :]        # (len_1d, Nz)
-                b_dz  = basis_1d_dz[:, 0, 0, :]         # (len_1d, Nz)
-                
-                val = jnp.einsum('mr,mz->rz', ce_eff, b_val)[:, None, :] # (Nr, 1, Nz)
-                dz  = jnp.einsum('mr,mz->rz', ce_eff, b_dz)[:, None, :]  # (Nr, 1, Nz)
-                
-                dr_contrib = jnp.dot(c_c.T, dfac_rad)   # (len_1d, Nr)
+                core_contrib = jnp.dot(c_c.T, fac_rad)  
+                ce_eff = c_e[:, None] + core_contrib    
+                b_val = basis_1d_val[:, 0, 0, :]        
+                b_dz  = basis_1d_dz[:, 0, 0, :]         
+                val = jnp.einsum('mr,mz->rz', ce_eff, b_val)[:, None, :] 
+                dz  = jnp.einsum('mr,mz->rz', ce_eff, b_dz)[:, None, :]  
+                dr_contrib = jnp.dot(c_c.T, dfac_rad)   
                 dr  = jnp.einsum('mr,mz->rz', dr_contrib, b_val)[:, None, :]
                 return val, dr, dz
 
             def eval_2d(c_e, c_c):
                 if len_2d == 0: 
                     return 0.0, 0.0, 0.0, 0.0
-                core_contrib = jnp.dot(c_c.T, fac_rad)  # (len_2d, Nr)
-                ce_eff = c_e[:, None] + core_contrib    # (len_2d, Nr)
-                
-                # 张量收缩: (len_2d, Nr) x (len_2d, Nr, Nt, Nz) -> (Nr, Nt, Nz)
+                core_contrib = jnp.dot(c_c.T, fac_rad)  
+                ce_eff = c_e[:, None] + core_contrib    
                 val = jnp.einsum('mr,mrtz->rtz', ce_eff, basis_2d_val)
                 dth = jnp.einsum('mr,mrtz->rtz', ce_eff, basis_2d_dth)
                 dz  = jnp.einsum('mr,mrtz->rtz', ce_eff, basis_2d_dze)
-                
-                dr_contrib = jnp.dot(c_c.T, dfac_rad)   # (len_2d, Nr)
+                dr_contrib = jnp.dot(c_c.T, dfac_rad)   
                 dr = jnp.einsum('mr,mrtz->rtz', dr_contrib, basis_2d_val) + \
                      jnp.einsum('mr,mrtz->rtz', ce_eff, basis_2d_dr)
                 return val, dr, dth, dz
@@ -358,22 +356,22 @@ class VEQ3D_Solver:
             
             thR = TH + c0R + tR
             thZ = TH + c0Z + tZ
-            R = e_R0 + h + RHO * a * jnp.cos(thR)
-            Z = e_Z0 + v + k * RHO * a * jnp.sin(thZ)
+            
+            R = e_R0 + a * (h + RHO * jnp.cos(thR))
+            Z = e_Z0 + a * (v - k * RHO * jnp.sin(thZ))
             
             thR_r, thR_th, thR_z = c0Rr + tRr, 1.0 + tRth, c0Rz + tRz
             thZ_r, thZ_th, thZ_z = c0Zr + tZr, 1.0 + tZth, c0Zz + tZz
             
-            Rr = hr + a * jnp.cos(thR) + RHO * ar * jnp.cos(thR) - RHO * a * jnp.sin(thR) * thR_r
-            Rt = -RHO * a * jnp.sin(thR) * thR_th
-            Rz = hz + RHO * az * jnp.cos(thR) - RHO * a * jnp.sin(thR) * thR_z
+            Rr = ar * (h + RHO * jnp.cos(thR)) + a * (hr + jnp.cos(thR) - RHO * jnp.sin(thR) * thR_r)
+            Rt = -a * RHO * jnp.sin(thR) * thR_th
+            Rz = az * (h + RHO * jnp.cos(thR)) + a * (hz - RHO * jnp.sin(thR) * thR_z)
             
-            Zr = vr + kr * RHO * a * jnp.sin(thZ) + k * a * jnp.sin(thZ) + k * RHO * ar * jnp.sin(thZ) + k * RHO * a * jnp.cos(thZ) * thZ_r
-            Zt = k * RHO * a * jnp.cos(thZ) * thZ_th
-            Zz = vz + kz * RHO * a * jnp.sin(thZ) + k * RHO * az * jnp.sin(thZ) + k * RHO * a * jnp.cos(thZ) * thZ_z
+            Zr = ar * (v - k * RHO * jnp.sin(thZ)) + a * (vr - kr * RHO * jnp.sin(thZ) - k * jnp.sin(thZ) - k * RHO * jnp.cos(thZ) * thZ_r)
+            Zt = -a * k * RHO * jnp.cos(thZ) * thZ_th
+            Zz = az * (v - k * RHO * jnp.sin(thZ)) + a * (vz - kz * RHO * jnp.sin(thZ) - k * RHO * jnp.cos(thZ) * thZ_z)
 
             det_phys = Rr * Zt - Rt * Zr
-            # 防御机制
             det_safe = jnp.where(jnp.abs(det_phys) < 1e-13, -1e-13, det_phys)
             
             sqrt_g = (R / Nt) * det_safe
@@ -383,12 +381,11 @@ class VEQ3D_Solver:
             g_rt, g_rz, g_tz = Rr*Rt+Zr*Zt, Rr*Rz+Zr*Zz, Rt*Rz+Zt*Zz
 
             if len_lam > 0:
-                # [向量化更新]: 构造针对各Lambda模式具有 rho^m 衰减特性的系数
-                rho_m_lam = rho_1d[None, :] ** lam_m_vals[:, None] # (len_lam, Nr)
+                rho_m_lam = rho_1d[None, :] ** lam_m_vals[:, None] 
                 lam_ce = jnp.dot(c_lam.T, T) * rho_m_lam * (1.0 - rho_1d**2)**2
                 
-                b_dth = basis_lam_dth[:, 0, :, :]    # (len_lam, Nt, Nz)
-                b_dze = basis_lam_dze[:, 0, :, :]    # (len_lam, Nt, Nz)
+                b_dth = basis_lam_dth[:, 0, :, :]    
+                b_dze = basis_lam_dze[:, 0, :, :]    
                 Lt = jnp.einsum('mr,mtz->rtz', lam_ce, b_dth)
                 Lz = jnp.einsum('mr,mtz->rtz', lam_ce, b_dze)
             else:
@@ -396,8 +393,8 @@ class VEQ3D_Solver:
                 Lz = 0.0
             
             P_scale = 1.8e4 
-            P = P_scale * (RHO**2 - 1)**2
-            dP = P_scale * 4 * RHO * (RHO**2 - 1)
+            P = pressure_scale_factor * P_scale * (RHO**2 - 1)**2
+            dP = pressure_scale_factor * P_scale * 4 * RHO * (RHO**2 - 1)
             Phip = 2 * RHO * Phi_a
             iota = 1.0 + 1.5 * RHO**2
             psip = iota * Phip
@@ -427,19 +424,19 @@ class VEQ3D_Solver:
             dV = dtheta * dzeta
             vol_w = sqrt_g * weights_3d * dV
             
-            term1 = GR * (-RHO * a * jnp.sin(thR)) * vol_w
-            term2 = GZ * (k * RHO * a * jnp.cos(thZ)) * vol_w
-            term3 = GR * vol_w
-            term4 = GZ * vol_w
-            term5 = GZ * (RHO * a * jnp.sin(thZ)) * vol_w
-            term6 = (GR * RHO * jnp.cos(thR) + GZ * k * RHO * jnp.sin(thZ)) * vol_w
+            term1 = GR * (-a * RHO * jnp.sin(thR)) * vol_w
+            term2 = GZ * (-a * k * RHO * jnp.cos(thZ)) * vol_w
+            term3 = GR * a * vol_w
+            term4 = GZ * a * vol_w
+            term5 = GZ * (-a * RHO * jnp.sin(thZ)) * vol_w
+            term6 = (GR * (h + RHO * jnp.cos(thR)) + GZ * (v - k * RHO * jnp.sin(thZ))) * vol_w
             
             basis_1d_tz = basis_1d_val[:, 0, 0, :]
             
             def integ_1d(term):
-                term_t = jnp.sum(term, axis=1) # (Nr, Nz)
-                term_tz = jnp.dot(term_t, basis_1d_tz.T) # (Nr, len_1d)
-                return jnp.dot(fac_rad, term_tz) # (L_rad, len_1d)
+                term_t = jnp.sum(term, axis=1) 
+                term_tz = jnp.dot(term_t, basis_1d_tz.T) 
+                return jnp.dot(fac_rad, term_tz) 
                 
             res1 = integ_1d(term1)
             res2 = integ_1d(term2)
@@ -451,14 +448,12 @@ class VEQ3D_Solver:
             geom_res_list = [res1, res2, res3, res4, res5, res6]
             
             if len_2d > 0:
-                term7 = GR * (-RHO * a * jnp.sin(thR)) * vol_w
-                term8 = GZ * (k * RHO * a * jnp.cos(thZ)) * vol_w
+                term7 = GR * (-a * RHO * jnp.sin(thR)) * vol_w
+                term8 = GZ * (-a * k * RHO * jnp.cos(thZ)) * vol_w
                 
-                # [内存/速度优化点]: 同样用 einsum 替换原先巨大的 5维 张量广播
                 def integ_2d(term):
-                    # term: (Nr, Nt, Nz), basis_2d_val: (len_2d, Nr, Nt, Nz)
-                    term_r = jnp.einsum('rtz,mrtz->mr', term, basis_2d_val) # (len_2d, Nr)
-                    return jnp.dot(fac_rad, term_r.T) # (L_rad, len_2d)
+                    term_r = jnp.einsum('rtz,mrtz->mr', term, basis_2d_val) 
+                    return jnp.dot(fac_rad, term_r.T) 
                     
                 geom_res_list.append(integ_2d(term7))
                 geom_res_list.append(integ_2d(term8))
@@ -469,27 +464,56 @@ class VEQ3D_Solver:
             if len_lam > 0:
                 term_lam = Jr_phys * vol_w
                 basis_lam_tz = basis_lam_val[:, 0, :, :]
-                term_lam_tz = jnp.tensordot(term_lam, basis_lam_tz, axes=([1, 2], [1, 2])) # (Nr, len_lam)
+                term_lam_tz = jnp.tensordot(term_lam, basis_lam_tz, axes=([1, 2], [1, 2])) 
                 
-                # [向量化更新]: 使用更新后且包含 rho^m 缩放规律的基底执行内积残差投影
                 fac_lam = (1.0 - rho_1d**2) * T
                 res_lam = jnp.dot(fac_lam, rho_m_lam.T * term_lam_tz)
                 final_res_list.append(res_lam.flatten())
                 
-            final_res = jnp.concatenate(final_res_list)
+            # =======================================================
+            # [解耦修改 1]：组装基础物理残差并进行物理缩放与屏障惩罚
+            # =======================================================
+            phys_res = jnp.concatenate(final_res_list)
 
             if apply_scaling:
-                final_res = final_res / res_scales
+                phys_res = phys_res / res_scales
                 
+            # 防坐标系自交/折叠的屏障惩罚 (必须且仅能应用于物理残差，防止引发优化器作弊)
             penalty = jnp.sum(jnp.where(det_phys < 1e-5, 100.0 * (1e-5 - det_phys)**2, 0.0))
-            final_res = final_res * (1.0 + penalty)  
+            phys_res = phys_res * (1.0 + penalty)  
                 
+            # =======================================================
+            # [解耦修改 2]：非线性纯净物理正则化约束扩展 (独立拼接)
+            # =======================================================
+            reg_residuals = []
+            
+            # [机制 1] 谱压缩正则化：惩罚 tR 和 tZ
+            # 迫使优化器在等效物理场中寻找一个高频分量最小的平滑 theta 坐标映射
+            if len_2d > 0:
+                # 给 t_R 和 t_Z 的每个系数独立乘以 sqrt(权重) (此时权重自身已经是无量纲合理的量级)
+                reg_tR = (c_tR * reg_weight_2d[None, :]).flatten()
+                reg_tZ = (c_tZ * reg_weight_2d[None, :]).flatten()
+                reg_residuals.extend([reg_tR, reg_tZ])
+                
+            # [机制 2] 流函数 Lambda 绝对最小化
+            # 通过 1e-6 的极小二次惩罚防止无意义的 Lambda 分支漂移
+            if len_lam > 0:
+                reg_lam = (c_lam * jnp.sqrt(1e-6)).flatten()
+                reg_residuals.append(reg_lam)
+                
+            # 将缩放后的物理残差和正则化辅助残差直接平级合并 (构建最终无量纲的超定系统)
+            # 注意：正则项不参与 res_scales 的缩放，也不参与坐标壁垒 penalty 的乘法作弊。
+            if reg_residuals:
+                final_res = jnp.concatenate([phys_res] + reg_residuals)
+            else:
+                final_res = phys_res
+
             return final_res
             
         return jax_res_fn
 
-    def _run_optimization(self, x0, max_nfev, ftol):
-        jax_res_fn = self._build_jax_residual_fn()
+    def _run_optimization(self, x0, max_nfev, ftol, pressure_scale_factor=1.0):
+        jax_res_fn = self._build_jax_residual_fn(pressure_scale_factor)
         
         @jax.jit
         def res_compiled(x):
@@ -520,14 +544,21 @@ class VEQ3D_Solver:
         )
         end_time = time.time()
         
+        # 计算纯物理残差（剥离末尾拼接的正则项）
+        reg_len = (2 * self.len_2d + self.len_lam) * self.L_rad
+        phys_len = len(res.fun) - reg_len
+        phys_res = res.fun[:phys_len]
+        
         print(f"    当前网格求解耗时: {end_time - start_time:.4f} 秒")
         print(f"    函数评估次数: {res.nfev} 次")
-        print(f"    最终残差范数: {np.linalg.norm(res.fun):.4e}")
+        print(f"    纯物理残差范数 (无正则项): {np.linalg.norm(phys_res):.4e}")
+        print(f"    最终合成残差范数 (含正则项): {np.linalg.norm(res.fun):.4e}")
         return res
 
     def solve(self):
-        print(">>> 启动 VEQ-3D 谱精度平衡求解器 (极简纯净三级火箭版)...")
+        print(">>> 启动 VEQ-3D 谱精度平衡求解器 (网格-压力双重延拓完美版)...")
         
+        # 动态计算不同阶段的安全网格尺寸
         def make_even(x): return x + (x % 2)
         c_Nr = make_even(max(8, 4 * self.L_rad + 2))
         c_Nt = make_even(max(12, 4 * self.M_pol + 4))
@@ -538,26 +569,27 @@ class VEQ3D_Solver:
         m_Nz = make_even(c_Nz + 4)
 
         print("\n" + "="*70)
-        print(f">>> [Phase 1/3]: 极粗网格冷启动寻向 (Nr={c_Nr}, Nt={c_Nt}, Nz={c_Nz})")
+        print(f">>> [Phase 1/3]: 粗网格 & 零压无力矩冷启动 (Nr={c_Nr}, Nt={c_Nt}, Nz={c_Nz}, P=0.0)")
         print("="*70)
-        self.update_grid(Nr=c_Nr, Nt_grid=c_Nt, Nz_grid=c_Nz)
+        self.update_grid(c_Nr, c_Nt, c_Nz)
         x_guess = np.zeros(self.num_core_params)
         
-        res_very_coarse = self._run_optimization(x_guess, max_nfev=30, ftol=1e-2)
+        # 放开探索步数至 200，在低分辨率下计算极快，不会耽误时间
+        res_phase1 = self._run_optimization(x_guess, max_nfev=200, ftol=1e-3, pressure_scale_factor=0.0)
 
         print("\n" + "="*70)
-        print(f">>> [Phase 2/3]: 中等网格形貌精炼 (Nr={m_Nr}, Nt={m_Nt}, Nz={m_Nz})")
+        print(f">>> [Phase 2/3]: 中网格 & 低压等离子体过渡 (Nr={m_Nr}, Nt={m_Nt}, Nz={m_Nz}, P=0.1)")
         print("="*70)
-        self.update_grid(Nr=m_Nr, Nt_grid=m_Nt, Nz_grid=m_Nz)
+        self.update_grid(m_Nr, m_Nt, m_Nz)
         
-        res_coarse = self._run_optimization(res_very_coarse.x, max_nfev=60, ftol=1e-5)
+        res_phase2 = self._run_optimization(res_phase1.x, max_nfev=200, ftol=1e-5, pressure_scale_factor=0.1)
 
         print("\n" + "="*70)
-        print(f">>> [Phase 3/3]: 高保真网格极限收敛 (Nr={self.target_Nr}, Nt={self.target_Nt}, Nz={self.target_Nz})")
+        print(f">>> [Phase 3/3]: 高保真网格 & 目标高压极限收敛 (Nr={self.target_Nr}, Nt={self.target_Nt}, Nz={self.target_Nz}, P=1.0)")
         print("="*70)
         self.update_grid(self.target_Nr, self.target_Nt, self.target_Nz)
         
-        res_fine = self._run_optimization(res_coarse.x, max_nfev=1000, ftol=1e-12)
+        res_fine = self._run_optimization(res_phase2.x, max_nfev=1000, ftol=1e-12, pressure_scale_factor=1.0)
 
         self.print_final_parameters(res_fine.x)
         self.plot_equilibrium(res_fine.x)
@@ -604,12 +636,12 @@ class VEQ3D_Solver:
         tR, tZ = ev_2d(e_tR, c_tR), ev_2d(e_tZ, c_tZ)
         
         thR, thZ = theta + c0R + tR, theta + c0Z + tZ
-        R = e_R0 + h + rho * a * np.cos(thR)
-        Z = e_Z0 + v + k * rho * a * np.sin(thZ)
+        
+        R = e_R0 + a * (h + rho * np.cos(thR))
+        Z = e_Z0 + a * (v - k * rho * np.sin(thZ))
         
         lam = np.zeros_like(base_grid)
         for i, (m, n) in enumerate(self.lambda_modes):
-            # [评估时更新]: 针对特定的 (m, n) 模式应用 rho^m 进行计算展开
             L_fac_rad_m = (rho ** m) * (1 - rho**2) * T
             lam = lam + np.tensordot(c_lam[:, i], L_fac_rad_m, axes=(0, 0)) * np.sin(m * theta - n * zeta)
             
@@ -648,7 +680,7 @@ class VEQ3D_Solver:
         print_1d("k_", e_k, c_k); print_1d("a_", e_a, c_a)
         
         if self.len_2d > 0:
-            print("-" * 110); print(">>> 极向高阶摄动分量 (theta_R & theta_Z):")
+            print("-" * 110); print(">>> 极向高阶摄动分量 (theta_R & theta_Z) [受谱压缩正则化约束]:")
             for i, (m, n, typ) in enumerate(self.modes_2d):
                 tR_str = f"tR_{m}_{n}{typ:<10} | {e_tR[i]:>25.8e} | " + " | ".join([f"{c_tR[L, i]:>22.8e}" for L in range(self.L_rad)])
                 print(tR_str)
@@ -656,7 +688,7 @@ class VEQ3D_Solver:
                 tZ_str = f"tZ_{m}_{n}{typ:<10} | {e_tZ[i]:>25.8e} | " + " | ".join([f"{c_tZ[L, i]:>22.8e}" for L in range(self.L_rad)])
                 print(tZ_str)
                 
-        print("-" * 110); print(f">>> 磁流函数 (Lambda) 谐波分量 ( 比例因子: rho^m * T_l(x) ):") # 更新了此处的提示文案
+        print("-" * 110); print(f">>> 磁流函数 (Lambda) 谐波分量 [受二次最小化惩罚约束]:") 
         for i, (m, n) in enumerate(self.lambda_modes):
             L_str = f"L_{m}_{n:<12} | {'-- Null --':>25} | " + " | ".join([f"{c_lam[L, i]:>22.8e}" for L in range(self.L_rad)])
             print(L_str)
@@ -684,7 +716,7 @@ class VEQ3D_Solver:
             
             rl_e, zl_e = self.compute_geometry(x_core, 1.0, np.linspace(0, 2*np.pi, 100), zv)[:2]
             ax.plot(rl_e, zl_e, color='#FFD700', lw=2.0, label='Solved Boundary')
-            ax.set_aspect('equal'); ax.set_title(f'Toroidal Angle $\zeta={zv:.2f}$'); 
+            ax.set_aspect('equal'); ax.set_title(f'Toroidal Angle $\zeta={zv:.2f}$') 
             if i == 0: ax.legend(loc='upper right', fontsize='xx-small')
         plt.tight_layout(); plt.show()
 
